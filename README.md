@@ -1,5 +1,5 @@
-Welcome to my GitHub repository dedicated to my Master's thesis project on "Case-Based Reasoning Approach for Solving Financial Question Answering." (Thesis proposal can be found [here]([URL_to_PDF](https://drive.google.com/file/d/1RwhxiKaxM6iNle0W6TWJaRAExnXCWjCV/view?usp=sharing))
-)
+Welcome to my GitHub repository dedicated to my Master's thesis project on "Case-Based Reasoning Approach for Solving Financial Question Answering." 
+(Thesis proposal can be found [here](https://drive.google.com/file/d/1RwhxiKaxM6iNle0W6TWJaRAExnXCWjCV/view?usp=sharing))
 This research project, conducted at the Graduate School of Data Science, Seoul National University, explores the integration of case-based reasoning (CBR) with Natural Language Processing (NLP) to enhance the accuracy and effectiveness of financial question answering systems.
 
 The focus of this thesis is to tackle the inherent complexities of financial documents, which include a mix of textual, tabular, and numerical data, by employing a novel strategy that leverages similar past cases to inform current question answering tasks. 
