@@ -11,7 +11,8 @@ def convert_case_retrieved(json_in, json_out, mode, k):
     # noise: case input으로 case retriever의 top-k 사용
     if mode == 'noise':
         for data in inf_data:
-            retrieved = data['reranked_cross'][:k]
+            retrieved = data['reranked'][:k]
+            # retrieved = data['reranked_cross'][:k]
             data['model_input']=retrieved
     # gold: case input으로 gold 사용.
     # gold 갯수가 k보다 작은 경우 gold & top-(k-gold) 사용.
@@ -119,11 +120,10 @@ def read_txt(input_path):
 if __name__ == '__main__':
 
     mode = 'noise'
-    json_in = '/shared/s3/lab07/yikyung/cbr/case_retriever/output/inference/cross_roberta-base_q+p/on_bienc_results_2/60_cands_train/results/predictions.json'
+    json_in = '/shared/s3/lab07/yikyung/cbr/case_retriever/output/inference/cross_roberta-base_q+p/on_bienc_results_2/10_cands_test/results/predictions.json'
 
-    output_path = '/shared/s3/lab07/yikyung/cbr/dataset/case_retriever_output/cross_encoder/cross_30/on_bienc_results_2/'
-    json_out = output_path + 'train_noise.json'
-    # json_out = output_path + 'test_retrieved.json'
+    output_path = '/shared/s3/lab07/yikyung/cbr/dataset/case_retriever_output/cross_encoder/cross_30/on_bienc_results_2_10/'
+    json_out = output_path + 'test_retrieved_noise3_program.json'
 
     constants_path='/shared/s3/lab07/yikyung/cbr/dataset/finqa_original/constant_list.txt'
     constants=read_txt(constants_path)

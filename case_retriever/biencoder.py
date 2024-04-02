@@ -3,6 +3,8 @@ from torch import nn
 import torch.nn.functional as F
 import torch.optim as optim
 
+from torch.utils.data import Dataset, DataLoader
+
 from transformers import BertModel, BertTokenizer, BertConfig
 from transformers import RobertaModel, RobertaTokenizer, RobertaConfig
 from transformers.optimization import AdamW, get_cosine_schedule_with_warmup
@@ -41,6 +43,8 @@ def keep_recent_models(model_path, max_files):
         for del_file in del_list:
             os.remove(model_path + del_file)
 
+def save_archive(archive_path, data, output_name):
+    pickle.dump(data, open(archive_path+output_name, 'wb')) 
 
 """ Read datasets and converting to features """
 class QuestionExample(
@@ -144,7 +148,7 @@ def get_model_input(tokenizer, question, max_seq_len, cls_token, sep_token):
         tokens = tokens[:max_seq_len-1]
         tokens += [sep_token]
         seg_ids = seg_ids[:max_seq_len]
-    
+
     input_ids = tokenizer.convert_tokens_to_ids(tokens)
     input_mask = [1]*len(input_ids)
 
@@ -178,7 +182,6 @@ def wrap_pair(tokenizer, question, candidate, label, max_seq_len, cls_token, sep
 
 
 def convert_qa_example(example, tokenizer, max_seq_len, cls_token, sep_token, input_concat, program_type):
-    all_features=[]
     pos_features=[]
     neg_features=[]
     question=example.question
@@ -203,10 +206,7 @@ def convert_qa_example(example, tokenizer, max_seq_len, cls_token, sep_token, in
         features['cand_index']=positive['index']
         features['cand_question']=positive['question']
         features['cand_program']=positive['program']
-        if conf.loss_adjust:
-            all_features.append(features)
-        else:
-            pos_features.append(features)
+        pos_features.append(features)
     
     for negative in example.negatives:
         neg_ques = negative['question']                                   
@@ -227,25 +227,156 @@ def convert_qa_example(example, tokenizer, max_seq_len, cls_token, sep_token, in
         features['cand_index']=negative['index']
         features['cand_question']=negative['question']
         features['cand_program']=negative['program']
-        if conf.loss_adjust:
-            all_features.append(features)
-        else:
-            neg_features.append(features)
+        neg_features.append(features)
 
-    return all_features, pos_features, neg_features
+    return pos_features, neg_features
 
 
-def get_negatives_by_score(program_type, gold_program, negative_candidates):
+def convert_to_features(examples, tokenizer):
+    pos_features=[]
+    neg_features=[]
+    for (index, example) in enumerate(examples):
+        pos, neg = example.convert_example(
+            tokenizer=tokenizer,
+            max_seq_len=conf.max_seq_len,
+            cls_token=tokenizer.cls_token,
+            sep_token=tokenizer.sep_token,
+            input_concat=conf.input_concat,
+            program_type=conf.program_type
+        )
+        pos_features.extend(pos)
+        neg_features.extend(neg)
+    return pos_features, neg_features
+
+
+
+class ExampleDataset(Dataset):
+    def __init__(self, example, tokenizer):
+        self.data=[]
+        self.label=[]
+        self.cand_index=[]
+        self.cand_question=[]
+        self.cand_program=[]
+        for positive in example.positives:
+            cand_q = positive['question']
+            cand_p = positive['program'][:-5]
+            cand = cand_q + " " + '[QNP]' + " " + cand_p
+            self.data.append(cand)
+            self.label.append(1)
+            self.cand_index.append(positive['index'])
+            self.cand_question.append(positive['question'])
+            self.cand_program.append(positive['program'])
+
+        for negative in example.negatives:
+            cand_q = negative['question']
+            cand_p = negative['program'][:-5]
+            cand = cand_q + " " + '[QNP]' + " " + cand_p
+            self.data.append(cand)
+            self.label.append(0)
+            self.cand_index.append(negative['index'])
+            self.cand_question.append(negative['question'])
+            self.cand_program.append(negative['program'])
+
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx):
+        return self.data[idx], self.label[idx], self.cand_index[idx], self.cand_question[idx], self.cand_program[idx]
+
+def convert_to_features_all(examples, tokenizer):
+    features=[]
+    for i, example in enumerate(examples):
+        index = example.org_index
+        # encode given question
+        question = example.question
+        encoded_q = tokenizer.encode_plus(question, padding="max_length", truncation=True, max_length=conf.max_seq_len, return_tensors="pt")
+        input_ids_q = encoded_q['input_ids'].tolist()[0]
+        input_mask_q = encoded_q['attention_mask'].tolist()[0]
+        seg_ids_q = [0]*len(input_ids_q)
+        # input_ids_q, input_mask_q, seg_ids_q = get_model_input(tokenizer, question, conf.max_seq_len, tokenizer.cls_token, tokenizer.sep_token)
+
+        # encode candidates by batch
+        example_dataset = ExampleDataset(example, tokenizer)
+        example_loader = DataLoader(example_dataset, batch_size=64, shuffle=False)
+        for j, (data, label, cand_index, cand_question, cand_program) in enumerate(example_loader):
+            encoded_c = tokenizer.batch_encode_plus(data, padding="max_length", truncation=True, max_length=conf.max_seq_len, return_tensors="pt")        
+            input_ids_c = encoded_c['input_ids'].tolist()
+            input_mask_c = encoded_c['attention_mask'].tolist()
+
+            # create feature for each candidates
+            for k in range(len(data)):
+                features.append({
+                    'input_ids_q': input_ids_q,
+                    'input_mask_q': input_mask_q,
+                    'seg_ids_q': seg_ids_q,
+                    'input_ids_c': input_ids_c[k],
+                    'input_mask_c': input_mask_c[k],
+                    'seg_ids_c': [0]*len(input_ids_c[k]),
+                    'label': label[k].item(),
+                    'query_index': index,
+                    'cand_index': cand_index[k].item(),
+                    'cand_question': cand_question[k],
+                    'cand_program': cand_program[k]
+                })
+
+        # # encode candidates one by one
+        # for j, positive in enumerate(example.positives):
+        #     index_c = positive['index']
+        #     cand_q = positive['question']
+        #     cand_p = positive['program'][:-5]
+        #     cand = cand_q + " " + '[QNP]' + " " + cand_p
+        #     input_ids_c, input_mask_c, seg_ids_c = get_model_input(tokenizer, cand, conf.max_seq_len, tokenizer.cls_token, tokenizer.sep_token)
+        #     features.append({
+        #         'input_ids_q': input_ids_q,
+        #         'input_mask_q': input_mask_q,
+        #         'seg_ids_q': seg_ids_q,
+        #         'input_ids_c': input_ids_c,
+        #         'input_mask_c': input_mask_c,
+        #         'seg_ids_c': seg_ids_c,
+        #         'label': 1,
+        #         'query_index': index,
+        #         'cand_index': index_c,
+        #         'cand_question': cand_q,
+        #         'cand_program': cand_p
+        #     })
+
+        # for j, negative in enumerate(example.negatives):
+        #     index_c = negative['index']
+        #     cand_q = negative['question']
+        #     cand_p = negative['program'][:-5]
+        #     cand = cand_q + " " + '[QNP]' + " " + cand_p
+        #     input_ids_c, input_mask_c, seg_ids_c = get_model_input(tokenizer, cand, conf.max_seq_len, tokenizer.cls_token, tokenizer.sep_token)
+        #     features.append({
+        #         'input_ids_q': input_ids_q,
+        #         'input_mask_q': input_mask_q,
+        #         'seg_ids_q': seg_ids_q,
+        #         'input_ids_c': input_ids_c,
+        #         'input_mask_c': input_mask_c,
+        #         'seg_ids_c': seg_ids_c,
+        #         'label': 0,
+        #         'query_index': index,
+        #         'cand_index': index_c,
+        #         'cand_question': cand_q,
+        #         'cand_program': cand_p
+        #     })
+ 
+    
+    return features
+
+
+
+
+def get_negatives_by_score(gold_program, negative_candidates):
     
     gold_program = program_tokenization(gold_program)
-    if program_type == 'ops':
+    if conf.program_type == 'ops':
         i=0
         gold_ops=[]
         while i < len(gold_program):
             gold_ops.append(gold_program[i])
             i+=4
 
-    elif program_type == 'prog':
+    elif conf.program_type == 'prog':
         i=0
         gold_ops=[]
         gold_args=[]
@@ -265,7 +396,7 @@ def get_negatives_by_score(program_type, gold_program, negative_candidates):
         i=0
         neg_ops=[]
         neg_args=[]
-        if program_type == 'ops':
+        if conf.program_type == 'ops':
             while i < len(neg_program):
                 neg_ops.append(neg_program[i])
                 i+=4
@@ -273,7 +404,7 @@ def get_negatives_by_score(program_type, gold_program, negative_candidates):
             ops_distance = levenshtein(gold_ops, neg_ops)
             score = (ops_len - ops_distance)/ops_len
 
-        elif program_type == 'prog':
+        elif conf.program_type == 'prog':
             while i < len(neg_program):
                 if (i%4==1) or (i%4==2):
                     neg_args.append(neg_program[i])
@@ -294,9 +425,8 @@ def get_negatives_by_score(program_type, gold_program, negative_candidates):
     return negative_candidates_scores
 
 
-def get_positives_and_negatives(data, mode, K_pos, num_cand, 
-                                neg_ratio, hard_ratio, fix_ratio, 
-                                data_type, program_type, negative_type):
+def get_positives_and_negatives(data, mode, seed):
+    random.seed(seed)
     gold_program = data['program']
     gold_index = [gold['index'] for gold in data['gold_index']]
     golds = data['gold_index']
@@ -309,10 +439,10 @@ def get_positives_and_negatives(data, mode, K_pos, num_cand,
             negative_candidates.append(candidate)
     num_neg_cands = len(negative_candidates)
 
-    k_pos = round(num_cand / (neg_ratio+1))
+    k_pos = round(conf.num_cand / (conf.neg_ratio+1))
     if num_golds < k_pos:
         k_pos = num_golds
-    k_neg = k_pos * neg_ratio
+    k_neg = k_pos * conf.neg_ratio
 
     if mode == 'train':
         # if number of negatives are less than k_neg, use all negatives
@@ -322,15 +452,19 @@ def get_positives_and_negatives(data, mode, K_pos, num_cand,
             negatives = negative_candidates
             return positives, negatives
 
-        if negative_type == 'random':           
+        if conf.sampling == 'random':           
             random.shuffle(golds)
             random.shuffle(negative_candidates)
             positives = golds[:k_pos]
             negatives = negative_candidates[:k_neg]
 
-        elif negative_type == 'hard':
-            negative_candidates_scores = get_negatives_by_score(program_type, gold_program, negative_candidates)
-            num_hard = round(k_neg*hard_ratio)
+        elif conf.sampling == 'hard':
+            # golds.sort(key=lambda x:x['question_score'])
+            # negative_candidates.sort(key=lambda x:x['program_score']) 
+            # num_hard = round(k_neg * conf.hard_ratio)
+            # num_easy = k_neg - num_hard
+            negative_candidates_scores = get_negatives_by_score(gold_program, negative_candidates)
+            num_hard = round(k_neg * conf.hard_ratio)
             num_easy = k_neg - num_hard
             hard_index = len(negative_candidates_scores)-num_hard
             hard_negatives = [negative[0] for negative in negative_candidates_scores[hard_index:]]
@@ -339,12 +473,12 @@ def get_positives_and_negatives(data, mode, K_pos, num_cand,
             positives = golds[:k_pos]
             negatives = hard_negatives + easy_negatives     
         
-        elif negative_type == 'adjusted_hard':
-            negative_candidates_scores = get_negatives_by_score(program_type, gold_program, negative_candidates)
-            num_hard = round(k_neg*hard_ratio)
+        elif conf.sampling == 'adjusted_hard':
+            negative_candidates_scores = get_negatives_by_score(gold_program, negative_candidates)
+            num_hard = round(k_neg * conf.hard_ratio)
             num_easy = k_neg - num_hard
-            fix_hard_index = len(negative_candidates_scores)-round(num_hard * fix_ratio)
-            fix_easy_index = round(num_easy * fix_ratio)
+            fix_hard_index = len(negative_candidates_scores)-round(num_hard * conf.fix_ratio)
+            fix_easy_index = round(num_easy * conf.fix_ratio)
             fix_hard_negatives = [negative[0] for negative in negative_candidates_scores[fix_hard_index:]]
             fix_easy_negatives = [negative[0] for negative in negative_candidates_scores[:fix_easy_index]]
             
@@ -360,22 +494,22 @@ def get_positives_and_negatives(data, mode, K_pos, num_cand,
 
     # # randomly get positive and negative candidates, satisfying the neg_ratio
     # if mode == "train":
-    #     K_neg = neg_ratio * K_pos   # neg_ratio = num_of_neg / num_of_pos
-    #     if num_golds >= K_pos:
+    #     K_neg = conf.neg_ratio * conf.K_pos   # neg_ratio = num_of_neg / num_of_pos
+    #     if num_golds >= conf.K_pos:
     #         if num_neg_cands >= K_neg:
     #             random.shuffle(golds)
     #             random.shuffle(negative_candidates)
-    #             positives = golds[:K_pos]
+    #             positives = golds[:conf.K_pos]
     #             negatives = negative_candidates[:K_neg]
     #         else:
-    #             num_pos = int((1/neg_ratio) * num_neg_cands)            
-    #             num_neg = int(neg_ratio * num_pos)                      
+    #             num_pos = int((1/conf.neg_ratio) * num_neg_cands)            
+    #             num_neg = int(conf.neg_ratio * num_pos)                      
     #             random.shuffle(golds)
     #             random.shuffle(negative_candidates)
     #             positives = golds[:num_pos]
     #             negatives = negative_candidates[:num_neg]
-    #     elif 0 < num_golds < K_pos:
-    #         num_neg = int(neg_ratio * num_golds)    
+    #     elif 0 < num_golds < conf.K_pos:
+    #         num_neg = int(conf.neg_ratio * num_golds)    
     #         random.shuffle(negative_candidates)
     #         positives = golds
     #         negatives = negative_candidates[:num_neg]
@@ -390,13 +524,11 @@ def get_positives_and_negatives(data, mode, K_pos, num_cand,
     return positives, negatives
 
 
-def read_example(data, mode):
+def read_example(data, mode, seed):
     org_index=data['original_index']       
     question=data['question']
     program=data['program']
-    candidates = get_positives_and_negatives(data, mode, conf.K_pos, conf.num_cand, 
-                                             conf.neg_ratio, conf.hard_ratio, conf.fix_ratio, 
-                                             conf.data_type, conf.program_type, conf.negative_type)
+    candidates = get_positives_and_negatives(data, mode, seed)
     positives=candidates[0]
     negatives=candidates[1]
     return QuestionExample(
@@ -407,49 +539,42 @@ def read_example(data, mode):
         negatives=negatives)
     
 
-def read_examples(input_path, log_path, mode):
+# def read_examples(input_path, log_path, mode):
+#     write_log(log_path, "Readings "+input_path)
+#     with open(input_path) as file:
+#         input_data = json.load(file)
+#     examples=[]
+#     for data in input_data:
+#         examples.append(read_example(data, mode))
+#     return input_data, examples
+
+
+def read_examples(input_data, mode, seed):
+    examples=[]
+    for data in input_data:
+        examples.append(read_example(data, mode, seed))
+    return examples
+
+def load_dataset(input_path, log_path):
     write_log(log_path, "Readings "+input_path)
     with open(input_path) as file:
         input_data = json.load(file)
-    examples=[]
-    for data in input_data:
-        examples.append(read_example(data, mode))
-    return input_data, examples
-    
-    
-def convert_to_features(examples, tokenizer):
-    all_features=[]
-    pos_features=[]
-    neg_features=[]
-    for (index, example) in enumerate(examples):
-        all_, pos, neg = example.convert_example(
-            tokenizer=tokenizer,
-            max_seq_len=conf.max_seq_len,
-            cls_token=tokenizer.cls_token,
-            sep_token=tokenizer.sep_token,
-            input_concat=conf.input_concat,
-            program_type=conf.program_type
-        )
-        if all_:
-            all_features.append(all_)
-        pos_features.extend(pos)
-        neg_features.extend(neg)
-    return all_features, pos_features, neg_features
+    return input_data
+
 
 
 
 """ Data Loader """
-class DataLoader:
+class myDataLoader:
     def __init__(self, is_training, data, batch_size):
-        self.data_all = data[0]
-        self.data_pos = data[1]
-        self.data_neg = data[2]
+        if conf.use_all_cands:
+            self.data = data
+        else:
+            self.data_pos = data[0]
+            self.data_neg = data[1]
+            self.data = self.data_pos + self.data_neg              
         self.batch_size = batch_size
         self.is_training = is_training
-        if conf.loss_adjust:
-            self.data = self.data_all
-        else:
-            self.data = self.data_pos + self.data_neg              
         self.data_size = len(self.data)
         self.num_batches = int(self.data_size / batch_size) if self.data_size % batch_size == 0 \
             else int(self.data_size / batch_size) + 1
@@ -477,8 +602,8 @@ class DataLoader:
         self.shuffle_all_data()
 
     def shuffle_all_data(self):
-        if conf.loss_adjust:
-            self.data = self.data_all
+        if conf.use_all_cands:
+            self.data = self.data
         else:
             self.data = self.data_pos + self.data_neg
         random.shuffle(self.data)
@@ -503,34 +628,18 @@ class DataLoader:
                       "cand_question": [],
                       "cand_program": []
                       }
-        if conf.loss_adjust:
-            for each_example in self.data[start_index: end_index]:
-                for each_data in each_example:
-                    batch_data["input_ids_q"].append(each_data["input_ids_q"])
-                    batch_data["input_mask_q"].append(each_data["input_mask_q"])
-                    batch_data["seg_ids_q"].append(each_data["seg_ids_q"])
-                    batch_data["input_ids_c"].append(each_data["input_ids_c"])
-                    batch_data["input_mask_c"].append(each_data["input_mask_c"])
-                    batch_data["seg_ids_c"].append(each_data["seg_ids_c"])
-                    batch_data["label"].append(each_data["label"])
-                    batch_data["query_index"].append(each_data["query_index"])
-                    batch_data["cand_index"].append(each_data["cand_index"])
-                    batch_data["cand_question"].append(each_data["cand_question"])
-                    batch_data["cand_program"].append(each_data["cand_program"])                    
-        else:
-            for each_data in self.data[start_index: end_index]:
-                batch_data["input_ids_q"].append(each_data["input_ids_q"])
-                batch_data["input_mask_q"].append(each_data["input_mask_q"])
-                batch_data["seg_ids_q"].append(each_data["seg_ids_q"])
-                batch_data["input_ids_c"].append(each_data["input_ids_c"])
-                batch_data["input_mask_c"].append(each_data["input_mask_c"])
-                batch_data["seg_ids_c"].append(each_data["seg_ids_c"])
-                batch_data["label"].append(each_data["label"])
-                batch_data["query_index"].append(each_data["query_index"])
-                batch_data["cand_index"].append(each_data["cand_index"])
-                batch_data["cand_question"].append(each_data["cand_question"])
-                batch_data["cand_program"].append(each_data["cand_program"])
-
+        for each_data in self.data[start_index: end_index]:
+            batch_data["input_ids_q"].append(each_data["input_ids_q"])
+            batch_data["input_mask_q"].append(each_data["input_mask_q"])
+            batch_data["seg_ids_q"].append(each_data["seg_ids_q"])
+            batch_data["input_ids_c"].append(each_data["input_ids_c"])
+            batch_data["input_mask_c"].append(each_data["input_mask_c"])
+            batch_data["seg_ids_c"].append(each_data["seg_ids_c"])
+            batch_data["label"].append(each_data["label"])
+            batch_data["query_index"].append(each_data["query_index"])
+            batch_data["cand_index"].append(each_data["cand_index"])
+            batch_data["cand_question"].append(each_data["cand_question"])
+            batch_data["cand_program"].append(each_data["cand_program"])
         return batch_data
 
 
@@ -563,6 +672,7 @@ class Bert_model(nn.Module):
         return output
 
 
+# ## dual encoder
 # class Biencoder_module(nn.Module):
 #     def __init__(self, hidden_size, tokenizer):
 #         super(Biencoder_module, self).__init__()
@@ -600,21 +710,18 @@ class Bert_model(nn.Module):
 #         _, embed_c = self.model(None, None, None, input_ids_c, input_mask_c, segment_ids_c)
 #         score = self.compute_score(embed_q, embed_c)
 
-#         if conf.loss_adjust:
-#             return score
-#         else:
-#             loss_function = nn.BCEWithLogitsLoss(reduction="sum", pos_weight=pos_weight)
-#             loss = loss_function(score, label)
-#             return score, loss
+#         loss_function = nn.BCEWithLogitsLoss(reduction="mean", pos_weight=pos_weight)
+#         loss = loss_function(score, label)
+#         return score, loss
         
 
-
+# single encoder
 class Biencoder(nn.Module):
     def __init__(self, hidden_size, tokenizer):
         super(Biencoder, self).__init__()
         self.model = Bert_model(hidden_size, tokenizer)
         self.model = self.model.to(conf.device)
-        # self.model = nn.DataParallel(self.model)
+        self.model = nn.DataParallel(self.model)
     
     def compute_score(self, embed_q, embed_c):
         embed_q = embed_q.unsqueeze(1)
@@ -628,24 +735,22 @@ class Biencoder(nn.Module):
         embed_c = self.model(input_ids_c, input_mask_c, segment_ids_c)
         score = self.compute_score(embed_q, embed_c)
 
-        if conf.loss_adjust:
-            return score
-        else:
-            loss_function = nn.BCEWithLogitsLoss(reduction="mean", pos_weight=pos_weight)
-            loss = loss_function(score, label)
-            return score, loss
+        loss_function = nn.BCEWithLogitsLoss(reduction="mean", pos_weight=pos_weight)
+        loss = loss_function(score, label)
+        return score, loss
 
 
 def get_positive_weight(label, mode):     # compute positive-negative ratio in batch
     num_positives = sum(label)
     num_negatives = len(label)-num_positives
     if num_positives == 0:          # when batch is composed of all negatives or all positives, apply constant positive weight to loss function (assumption)
-        if mode == 'train':
-            return conf.neg_ratio
-        elif mode == 'valid':
-            return valid_ratio
-        elif mode == 'test':
-            return inf_ratio
+        return conf.neg_ratio
+        # if mode == 'train':
+        #     return conf.neg_ratio
+        # elif mode == 'valid':
+        #     return valid_ratio
+        # elif mode == 'test':
+        #     return inf_ratio
     else:
         return num_negatives/num_positives
     
@@ -667,77 +772,69 @@ class EarlyStopping:
         return self.patience >= self.patience_limit
     
 
-def compute_loss(loss_function, score, label):
-    score_neg=[]
-    label_neg=[]
-    for i in range(len(label)):
-        if label[i].item()==0:
-            score_neg.append(score[i].item())
-            label_neg.append(0)
-    
-    all_loss=[]
-    for i in range(len(label)):
-        if label[i].item()==1:
-            score_neg_loss = score_neg+[score[i].item()]
-            label_neg_loss = label_neg+[1]
-            score_neg_loss = torch.tensor(score_neg_loss, requires_grad=True)
-            label_neg_loss = torch.tensor(label_neg_loss, dtype=torch.float32)
-            # print(score_neg_loss)
-            loss = loss_function(score_neg_loss, label_neg_loss)
-            # print(loss)
-            all_loss.append(loss.item())
-    all_loss = torch.tensor(all_loss, requires_grad=True)
-    # loss = torch.tensor(torch.mean(all_loss), requires_grad=True)
-    loss = torch.mean(all_loss)
-    loss = loss.clone().detach().requires_grad_(True).to(conf.device)
-    print("loss in batch: ", all_loss)
-    print("mean loss in batch: ", loss)
-    return loss
-
-
 """ Model training """
-def train():
+def train(train_data, valid_data):
     mode = 'train'  
     model = Biencoder(model_config.hidden_size, tokenizer)
     model.train()
 
+    # load train data
+    train_examples = read_examples(train_data, 'train', 0)
+    kwargs={'examples': train_examples, 'tokenizer': tokenizer}
+    write_log(log_path, "Starts converting training data to features")
+    if conf.use_all_cands:
+        train_features = convert_to_features_all(**kwargs)
+    else:
+        train_features = convert_to_features(**kwargs)
+    train_loader = myDataLoader(is_training=True, data=train_features, batch_size=conf.batch_size)
+    total_steps = train_loader.num_batches * conf.epoch
+    print("total number of batches: ", train_loader.num_batches)
+
+    # load valid data
+    valid_examples = read_examples(valid_data, 'valid', 0)
+    kwargs={'examples': valid_examples, 'tokenizer': tokenizer}
+    write_log(log_path, "Starts converting validation data to features")
+    if conf.use_all_cands:
+        valid_features = convert_to_features_all(**kwargs)
+    else:
+        valid_features = convert_to_features(**kwargs)
+
+    # for optimization
     early_stop = EarlyStopping(patience=conf.patience)
     optimizer = optim.Adam(model.parameters(), conf.learning_rate)
-    train_loader = DataLoader(is_training=True, data=train_features, batch_size=conf.batch_size)
-    total_steps = train_loader.num_batches * conf.epoch
     if not conf.resume:
         scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps = total_steps*conf.warm_up_prop, num_training_steps=total_steps)
 
-    if conf.loss_adjust:
-        loss_function = nn.CrossEntropyLoss()
-
+    # for records
     record_step = 0
     record_loss = 0.0
     start_time = time.time()
-
     ep_global = 0   
-    previous_step = 0  
     if conf.resume:
         checkpoint = torch.load(conf.resume_model)
         ep_global = checkpoint['epoch']+1
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps = total_steps*conf.warm_up_prop, num_training_steps=total_steps, last_epoch=checkpoint['epoch'])
+    
+    # starts training
     for ep in trange(ep_global, conf.epoch, desc="epoch"):
-
-        # if ep > 0:
-        #     train_data_ep, train_examples_ep = read_examples(conf.train_file, log_path, 'train')
-        #     kwargs={'examples': train_examples_ep, 'tokenizer': tokenizer}
-        #     write_log(log_path, "Starts converting training data to features")
-        #     train_features_ep = convert_to_features(**kwargs)
-        #     train_loader = DataLoader(is_training=True, data=train_features_ep, batch_size=conf.batch_size)
-        #     print("total number of batches: ", train_loader.num_batches)
+        write_log(log_path, "Epoch %d starts" % (ep))
+        # sampling every epoch
+        if (conf.resume==False and ep > 0) or (conf.resume==True and ep > ep_global):
+            train_examples = read_examples(train_data, 'train', ep)
+            kwargs={'examples': train_examples, 'tokenizer': tokenizer}
+            write_log(log_path, "Starts converting training data to features")
+            if conf.use_all_cands:
+                train_features = convert_to_features_all(**kwargs)
+            else:
+                train_features = convert_to_features(**kwargs)
+            train_loader = myDataLoader(is_training=True, data=train_features, batch_size=conf.batch_size)
+            total_steps = train_loader.num_batches * conf.epoch
+            print("total number of batches: ", train_loader.num_batches)
 
         train_loader.reset()
-        write_log(log_path, "Epoch %d starts" % (ep))
         for step, batch in enumerate(train_loader):
-            if ep <= ep_global and step < previous_step:
-                continue
             input_ids_q = torch.tensor(batch['input_ids_q']).to(conf.device)
             input_mask_q = torch.tensor(batch['input_mask_q']).to(conf.device)
             seg_ids_q = torch.tensor(batch['seg_ids_q']).to(conf.device)
@@ -750,11 +847,7 @@ def train():
             model.zero_grad()
             optimizer.zero_grad()
 
-            if conf.loss_adjust:
-                score = model(input_ids_q, input_mask_q, seg_ids_q, input_ids_c, input_mask_c, seg_ids_c, label, pos_weight)            
-                loss = compute_loss(loss_function, score, label)
-            else:
-                score, loss = model(input_ids_q, input_mask_q, seg_ids_q, input_ids_c, input_mask_c, seg_ids_c, label, pos_weight)            
+            score, loss = model(input_ids_q, input_mask_q, seg_ids_q, input_ids_c, input_mask_c, seg_ids_c, label, pos_weight)            
 
             record_loss += loss.item()*100
             record_step+=1
@@ -770,7 +863,7 @@ def train():
                 record_loss = 0.0
                 record_step = 0
 
-        # save model model every epoch
+        # save model every epoch
         saved_model_path_dict = os.path.join(model_path, 'epoch_{}'.format(ep))
         torch.save({'epoch': ep, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict()}, saved_model_path_dict)
         # keep_recent_models(model_path+'/', (conf.patience+1))
@@ -803,10 +896,7 @@ def evaluate(features, model, results_path_cnt, mode):
     results_path_cnt_mode = os.path.join(results_path_cnt, mode)
     os.makedirs(results_path_cnt_mode, exist_ok=True)
 
-    data_iterator = DataLoader(is_training=False, data=features, batch_size=conf.batch_size_test)
-
-    if conf.loss_adjust:
-        loss_function = nn.CrossEntropyLoss(reduction='sum')
+    data_iterator = myDataLoader(is_training=False, data=features, batch_size=conf.batch_size_test)
 
     total_loss = 0.0
     scores = []
@@ -832,11 +922,7 @@ def evaluate(features, model, results_path_cnt, mode):
             c_question = x['cand_question']
             c_program = x['cand_program']
 
-            if conf.loss_adjust:
-                score = model(input_ids_q, input_mask_q, seg_ids_q, input_ids_c, input_mask_c, seg_ids_c, label, pos_weight)            
-                loss = compute_loss(loss_function, score, label)
-            else:
-                score, loss = model(input_ids_q, input_mask_q, seg_ids_q, input_ids_c, input_mask_c, seg_ids_c, label, pos_weight)            
+            score, loss = model(input_ids_q, input_mask_q, seg_ids_q, input_ids_c, input_mask_c, seg_ids_c, label, pos_weight)            
 
             total_loss += loss.item()*100
             scores.extend(score.tolist())
@@ -981,7 +1067,7 @@ def retrieve_evaluate(scores, query_index, cand_index, cand_question, cand_progr
 
 
 """ Inference """
-def test():
+def test(test_data):
 
     mode = 'test'  
     model = Biencoder(model_config.hidden_size, tokenizer)
@@ -990,7 +1076,16 @@ def test():
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
 
-    data_iterator = DataLoader(is_training=False, data=inf_features, batch_size=conf.batch_size_test)
+
+    # load test data
+    test_examples = read_examples(test_data, 'test', 0)
+    kwargs={'examples': test_examples, 'tokenizer': tokenizer}
+    write_log(log_path, "Starts converting test data to features")
+    if conf.use_all_cands:
+        test_features = convert_to_features_all(**kwargs)
+    else:
+        test_features = convert_to_features(**kwargs)
+    data_iterator = myDataLoader(is_training=False, data=test_features, batch_size=conf.batch_size_test)
     
     scores = []
     query_index = []
@@ -1015,10 +1110,7 @@ def test():
             c_question = x['cand_question']
             c_program = x['cand_program']
 
-            if conf.loss_adjust:
-                score = model(input_ids_q, input_mask_q, seg_ids_q, input_ids_c, input_mask_c, seg_ids_c, label, pos_weight)            
-            else:
-                score, loss = model(input_ids_q, input_mask_q, seg_ids_q, input_ids_c, input_mask_c, seg_ids_c, label, pos_weight)            
+            score, loss = model(input_ids_q, input_mask_q, seg_ids_q, input_ids_c, input_mask_c, seg_ids_c, label, pos_weight)            
 
             scores.extend(score.tolist())
             query_index.extend(q_index)
@@ -1047,7 +1139,7 @@ if __name__ == '__main__':
         tokenizer = RobertaTokenizer.from_pretrained(conf.bert_size)
         model_config = RobertaConfig.from_pretrained(conf.bert_size)
 
-    special_token = {'additional_special_tokens': ['[QNP]']}          # question and program
+    special_token = {'additional_special_tokens': [ '[QNP]']}          # token between question and program
     num_added_toks = tokenizer.add_special_tokens(special_token)
 
     if conf.mode == 'train':
@@ -1066,19 +1158,28 @@ if __name__ == '__main__':
         write_log(log_path, "#######################################################")
 
         """Import dataset and convert info features"""
-        train_data, train_examples = read_examples(conf.train_file, log_path, 'train')
-        kwargs={'examples': train_examples, 'tokenizer': tokenizer}
-        write_log(log_path, "Starts converting training data to features")
-        train_features = convert_to_features(**kwargs)
-        
-        valid_data, valid_examples = read_examples(conf.valid_file, log_path, 'valid')
-        kwargs['examples'] = valid_examples
-        write_log(log_path, "Starts converting validation data to features")
-        valid_features = convert_to_features(**kwargs)
-        if conf.loss_adjust:
-            valid_ratio = conf.neg_ratio
-        else:
-            valid_ratio = len(valid_features[1])/len(valid_features[0])     
+        train_data = load_dataset(conf.train_file, log_path)
+        valid_data = load_dataset(conf.valid_file, log_path)
+
+        # train_data, train_examples = read_examples(conf.train_file, log_path, 'train')
+        # kwargs={'examples': train_examples, 'tokenizer': tokenizer}
+        # write_log(log_path, "Starts converting training data to features")
+        # train_features = convert_to_features(**kwargs)
+
+        # valid_data, valid_examples = read_examples(conf.valid_file, log_path, 'valid')
+        # kwargs['examples'] = valid_examples
+        # write_log(log_path, "Starts converting validation data to features")
+        # valid_features = convert_to_features(**kwargs)
+  
+
+        # if not conf.use_all_cands:
+        #     valid_ratio = len(valid_features[1])/len(valid_features[0])     
+        # else:
+        #     num_pos=0
+        #     for feature in valid_features:
+        #         num_pos+=feature['label']
+        #     num_neg = len(valid_features)-num_pos
+        #     valid_ratio = num_neg/num_pos
 
         if not conf.resume:
             wandb.init(project="case_retriever", notes=conf.dir_name)
@@ -1086,7 +1187,7 @@ if __name__ == '__main__':
             wandb.init(project="case_retriever", notes=conf.dir_name, resume="must", id=conf.wandb_id)
 
         write_log(log_path, "Starts training...")
-        train()
+        train(train_data, valid_data)
 
     else:
         """Set path"""
@@ -1102,17 +1203,26 @@ if __name__ == '__main__':
         write_log(log_path, "#######################################################")
 
         """Import dataset and convert info features"""
-        inf_data, inf_examples = read_examples(conf.inference_file, log_path, 'test')
-        kwargs={'examples': inf_examples, 'tokenizer': tokenizer}
-        write_log(log_path, "Starts converting data to features")
-        inf_features = convert_to_features(**kwargs)
-        if conf.loss_adjust:
-            inf_ratio = conf.neg_ratio
-        else:
-            inf_ratio = len(inf_features[1])/len(inf_features[0])       
+        test_data = load_dataset(conf.inference_file, log_path)
+        # inf_data, inf_examples = read_examples(conf.inference_file, log_path, 'test')
+        # kwargs={'examples': inf_examples, 'tokenizer': tokenizer}
+        # write_log(log_path, "Starts converting data to features")
+        # if not conf.use_all_cands:
+        #     inf_features = convert_to_features(**kwargs)
+        # else:
+        #     inf_features = convert_to_features_all(**kwargs)
+
+        # if not conf.use_all_cands:
+        #     inf_ratio = len(inf_features[1])/len(inf_features[0])
+        # else:
+        #     num_pos=0
+        #     for feature in inf_features:
+        #         num_pos+=feature['label']
+        #     num_neg = len(inf_features)-num_pos
+        #     inf_ratio = num_neg/num_pos
+      
         write_log(log_path, "Inference starts...")
-        
-        test()
+        test(test_data)
 
 
    

@@ -877,7 +877,7 @@ def retrieve_evaluate(scores, query_index, cand_index, cand_question, cand_progr
         if conf.sort == 'score':
             y_pred_score = [data['score'] for data in pred]  # predicted score
         elif conf.sort == 'softmax':
-            y_pred_scre = [data['prob1'] for data in pred]
+            y_pred_score = [data['prob1'] for data in pred]
         
         # y_true_score=[] # program score
         # for index in pred_index:
