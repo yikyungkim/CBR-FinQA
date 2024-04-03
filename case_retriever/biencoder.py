@@ -24,7 +24,7 @@ import pickle
 import wandb
 
 from config_bienc import parameters as conf
-
+import sampling as sampling
 
 
 """ Uility functions """
@@ -43,17 +43,15 @@ def keep_recent_models(model_path, max_files):
         for del_file in del_list:
             os.remove(model_path + del_file)
 
-def save_archive(archive_path, data, output_name):
-    pickle.dump(data, open(archive_path+output_name, 'wb')) 
 
-""" Read datasets and converting to features """
+
+""" Read datasets """
 class QuestionExample(
     collections.namedtuple(
     "QuestionExample",
     "org_index, question, program, positives, negatives")):
     def convert_example(self, *args, **kwargs):
         return convert_qa_example(self, *args, **kwargs)
-
 
 def tokenize(tokenizer, text):
     _SPECIAL_TOKENS_RE = re.compile(r"^\[[^ ]*\]$", re.UNICODE)
@@ -69,44 +67,6 @@ def tokenize(tokenizer, text):
             tokens.extend(tokenize_fn(token))
     return tokens
 
-def program_tokenization(original_program):
-    original_program = original_program.split(', ')
-    program = []
-    for tok in original_program:
-        cur_tok = ''
-        for c in tok:
-            if c == ')':
-                if cur_tok != '':
-                    program.append(cur_tok)
-                    cur_tok = ''
-            cur_tok += c
-            if c in ['(', ')']:
-                program.append(cur_tok)
-                cur_tok = ''
-        if cur_tok != '':
-            program.append(cur_tok)
-#     program.append('EOF')
-    return program
-
-def levenshtein(s1, s2, debug=False):
-    if len(s1) < len(s2):
-        return levenshtein(s2, s1, debug)
-    if len(s2) == 0:
-        return len(s1)
-    
-    previous_row = range(len(s2) + 1)
-    for i, c1 in enumerate(s1):
-        current_row = [i + 1]
-        for j, c2 in enumerate(s2):
-            insertions = previous_row[j + 1] + 1
-            deletions = current_row[j] + 1
-            substitutions = previous_row[j] + (c1 != c2)
-            current_row.append(min(insertions, deletions, substitutions))
-        if debug:
-            print(current_row[1:])
-        previous_row = current_row
-
-    return previous_row[-1]
 
 def operators_in_program(original_program):
     original_program = original_program.split(', ')
@@ -137,7 +97,32 @@ def operators_in_program(original_program):
             
     return operators
 
+def read_example(data, mode, seed):
+    org_index=data['original_index']       
+    question=data['question']
+    program=data['program']
+    candidates = get_positives_and_negatives(data, mode, seed)
+    positives=candidates[0]
+    negatives=candidates[1]
+    return QuestionExample(
+        org_index=org_index, 
+        question=question, 
+        program=program, 
+        positives=positives,
+        negatives=negatives)
+    
 
+def read_examples(input_path, mode, seed):
+    write_log(log_path, "Readings "+input_path)
+    with open(input_path) as file:
+        input_data = json.load(file)
+    examples=[]
+    for data in input_data:
+        examples.append(read_example(data, mode, seed))
+    return input_data, examples
+
+
+""" Converting examples to model input (features) """
 def get_model_input(tokenizer, question, max_seq_len, cls_token, sep_token):
     question_token = tokenize(tokenizer, question)
     tokens = [cls_token]+question_token+[sep_token]
@@ -164,28 +149,13 @@ def get_model_input(tokenizer, question, max_seq_len, cls_token, sep_token):
     return input_ids, input_mask, seg_ids
 
 
-def wrap_pair(tokenizer, question, candidate, label, max_seq_len, cls_token, sep_token):
-
-    input_ids_q, input_mask_q, seg_ids_q = get_model_input(tokenizer, question, max_seq_len, cls_token, sep_token)
-    input_ids_c, input_mask_c, seg_ids_c = get_model_input(tokenizer, candidate, max_seq_len, cls_token, sep_token)
-
-    features = {
-        'input_ids_q': input_ids_q,
-        'input_mask_q': input_mask_q,
-        'seg_ids_q': seg_ids_q,
-        'input_ids_c': input_ids_c,
-        'input_mask_c': input_mask_c,
-        'seg_ids_c': seg_ids_c,
-        'label': label
-    }
-    return features
-
 
 def convert_qa_example(example, tokenizer, max_seq_len, cls_token, sep_token, input_concat, program_type):
     pos_features=[]
     neg_features=[]
     question=example.question
     index=example.org_index
+    input_ids_q, input_mask_q, seg_ids_q = get_model_input(tokenizer, question, max_seq_len, cls_token, sep_token)
 
     for positive in example.positives:
         gold_ques = positive['question']
@@ -201,7 +171,15 @@ def convert_qa_example(example, tokenizer, max_seq_len, cls_token, sep_token, in
         elif input_concat == "qonly":
             gold_cand = gold_ques
 
-        features = wrap_pair(tokenizer, question, gold_cand, 1, max_seq_len, cls_token, sep_token)
+        input_ids_c, input_mask_c, seg_ids_c = get_model_input(tokenizer, gold_cand, max_seq_len, cls_token, sep_token)
+        features={}
+        features['input_ids_q']=input_ids_q
+        features['input_mask_q']=input_mask_q
+        features['seg_ids_q']=seg_ids_q
+        features['input_ids_c']=input_ids_c
+        features['input_mask_c']=input_mask_c
+        features['seg_ids_c']=seg_ids_c
+        features['label']=1
         features['query_index']=index
         features['cand_index']=positive['index']
         features['cand_question']=positive['question']
@@ -221,8 +199,16 @@ def convert_qa_example(example, tokenizer, max_seq_len, cls_token, sep_token, in
             neg_cand = neg_prog
         elif input_concat == "qonly":
             neg_cand = neg_ques
-        
-        features = wrap_pair(tokenizer, question, neg_cand, 0, max_seq_len, cls_token, sep_token)
+
+        input_ids_c, input_mask_c, seg_ids_c = get_model_input(tokenizer, neg_cand, max_seq_len, cls_token, sep_token)
+        features={}
+        features['input_ids_q']=input_ids_q
+        features['input_mask_q']=input_mask_q
+        features['seg_ids_q']=seg_ids_q
+        features['input_ids_c']=input_ids_c
+        features['input_mask_c']=input_mask_c
+        features['seg_ids_c']=seg_ids_c
+        features['label']=0
         features['query_index']=index
         features['cand_index']=negative['index']
         features['cand_question']=negative['question']
@@ -232,11 +218,13 @@ def convert_qa_example(example, tokenizer, max_seq_len, cls_token, sep_token, in
     return pos_features, neg_features
 
 
+
 def convert_to_features(examples, tokenizer):
     pos_features=[]
     neg_features=[]
     for (index, example) in enumerate(examples):
-        pos, neg = example.convert_example(
+        pos, neg = convert_qa_example(
+            example=example,
             tokenizer=tokenizer,
             max_seq_len=conf.max_seq_len,
             cls_token=tokenizer.cls_token,
@@ -249,182 +237,7 @@ def convert_to_features(examples, tokenizer):
     return pos_features, neg_features
 
 
-
-class ExampleDataset(Dataset):
-    def __init__(self, example, tokenizer):
-        self.data=[]
-        self.label=[]
-        self.cand_index=[]
-        self.cand_question=[]
-        self.cand_program=[]
-        for positive in example.positives:
-            cand_q = positive['question']
-            cand_p = positive['program'][:-5]
-            cand = cand_q + " " + '[QNP]' + " " + cand_p
-            self.data.append(cand)
-            self.label.append(1)
-            self.cand_index.append(positive['index'])
-            self.cand_question.append(positive['question'])
-            self.cand_program.append(positive['program'])
-
-        for negative in example.negatives:
-            cand_q = negative['question']
-            cand_p = negative['program'][:-5]
-            cand = cand_q + " " + '[QNP]' + " " + cand_p
-            self.data.append(cand)
-            self.label.append(0)
-            self.cand_index.append(negative['index'])
-            self.cand_question.append(negative['question'])
-            self.cand_program.append(negative['program'])
-
-    def __len__(self):
-        return len(self.data)
-    
-    def __getitem__(self, idx):
-        return self.data[idx], self.label[idx], self.cand_index[idx], self.cand_question[idx], self.cand_program[idx]
-
-def convert_to_features_all(examples, tokenizer):
-    features=[]
-    for i, example in enumerate(examples):
-        index = example.org_index
-        # encode given question
-        question = example.question
-        encoded_q = tokenizer.encode_plus(question, padding="max_length", truncation=True, max_length=conf.max_seq_len, return_tensors="pt")
-        input_ids_q = encoded_q['input_ids'].tolist()[0]
-        input_mask_q = encoded_q['attention_mask'].tolist()[0]
-        seg_ids_q = [0]*len(input_ids_q)
-        # input_ids_q, input_mask_q, seg_ids_q = get_model_input(tokenizer, question, conf.max_seq_len, tokenizer.cls_token, tokenizer.sep_token)
-
-        # encode candidates by batch
-        example_dataset = ExampleDataset(example, tokenizer)
-        example_loader = DataLoader(example_dataset, batch_size=64, shuffle=False)
-        for j, (data, label, cand_index, cand_question, cand_program) in enumerate(example_loader):
-            encoded_c = tokenizer.batch_encode_plus(data, padding="max_length", truncation=True, max_length=conf.max_seq_len, return_tensors="pt")        
-            input_ids_c = encoded_c['input_ids'].tolist()
-            input_mask_c = encoded_c['attention_mask'].tolist()
-
-            # create feature for each candidates
-            for k in range(len(data)):
-                features.append({
-                    'input_ids_q': input_ids_q,
-                    'input_mask_q': input_mask_q,
-                    'seg_ids_q': seg_ids_q,
-                    'input_ids_c': input_ids_c[k],
-                    'input_mask_c': input_mask_c[k],
-                    'seg_ids_c': [0]*len(input_ids_c[k]),
-                    'label': label[k].item(),
-                    'query_index': index,
-                    'cand_index': cand_index[k].item(),
-                    'cand_question': cand_question[k],
-                    'cand_program': cand_program[k]
-                })
-
-        # # encode candidates one by one
-        # for j, positive in enumerate(example.positives):
-        #     index_c = positive['index']
-        #     cand_q = positive['question']
-        #     cand_p = positive['program'][:-5]
-        #     cand = cand_q + " " + '[QNP]' + " " + cand_p
-        #     input_ids_c, input_mask_c, seg_ids_c = get_model_input(tokenizer, cand, conf.max_seq_len, tokenizer.cls_token, tokenizer.sep_token)
-        #     features.append({
-        #         'input_ids_q': input_ids_q,
-        #         'input_mask_q': input_mask_q,
-        #         'seg_ids_q': seg_ids_q,
-        #         'input_ids_c': input_ids_c,
-        #         'input_mask_c': input_mask_c,
-        #         'seg_ids_c': seg_ids_c,
-        #         'label': 1,
-        #         'query_index': index,
-        #         'cand_index': index_c,
-        #         'cand_question': cand_q,
-        #         'cand_program': cand_p
-        #     })
-
-        # for j, negative in enumerate(example.negatives):
-        #     index_c = negative['index']
-        #     cand_q = negative['question']
-        #     cand_p = negative['program'][:-5]
-        #     cand = cand_q + " " + '[QNP]' + " " + cand_p
-        #     input_ids_c, input_mask_c, seg_ids_c = get_model_input(tokenizer, cand, conf.max_seq_len, tokenizer.cls_token, tokenizer.sep_token)
-        #     features.append({
-        #         'input_ids_q': input_ids_q,
-        #         'input_mask_q': input_mask_q,
-        #         'seg_ids_q': seg_ids_q,
-        #         'input_ids_c': input_ids_c,
-        #         'input_mask_c': input_mask_c,
-        #         'seg_ids_c': seg_ids_c,
-        #         'label': 0,
-        #         'query_index': index,
-        #         'cand_index': index_c,
-        #         'cand_question': cand_q,
-        #         'cand_program': cand_p
-        #     })
- 
-    
-    return features
-
-
-
-
-def get_negatives_by_score(gold_program, negative_candidates):
-    
-    gold_program = program_tokenization(gold_program)
-    if conf.program_type == 'ops':
-        i=0
-        gold_ops=[]
-        while i < len(gold_program):
-            gold_ops.append(gold_program[i])
-            i+=4
-
-    elif conf.program_type == 'prog':
-        i=0
-        gold_ops=[]
-        gold_args=[]
-        while i < len(gold_program):
-            if (i%4==1) or (i%4==2):
-                gold_args.append(gold_program[i])
-            if (i%4==0):
-                if gold_program[i]!='EOF':
-                    gold_ops.append(gold_program[i])
-            i+=1
-    
-    
-    """ calculate distance score for negative candidates """
-    negative_candidates_scores=[]
-    for negative in negative_candidates:
-        neg_program = program_tokenization(negative['program'])
-        i=0
-        neg_ops=[]
-        neg_args=[]
-        if conf.program_type == 'ops':
-            while i < len(neg_program):
-                neg_ops.append(neg_program[i])
-                i+=4
-            ops_len = len(gold_ops)
-            ops_distance = levenshtein(gold_ops, neg_ops)
-            score = (ops_len - ops_distance)/ops_len
-
-        elif conf.program_type == 'prog':
-            while i < len(neg_program):
-                if (i%4==1) or (i%4==2):
-                    neg_args.append(neg_program[i])
-                if (i%4==0):
-                    if neg_program[i]!='EOF':
-                        neg_ops.append(neg_program[i])
-                i+=1
-            ops_len = len(gold_ops)
-            ops_distance = levenshtein(gold_ops, neg_ops)
-            ops_score = (ops_len - ops_distance)/ops_len
-            arg_len = len(gold_args)
-            arg_distance = levenshtein(gold_args, neg_args)
-            arg_score = (arg_len - arg_distance)/arg_len
-            score = 0.8 * ops_score + 0.2 * arg_score
-        negative_candidates_scores.append([negative, score])
-        
-    negative_candidates_scores.sort(key=lambda x:x[1])
-    return negative_candidates_scores
-
-
+# use this code to get positive and negative samples from top-100 candidates
 def get_positives_and_negatives(data, mode, seed):
     random.seed(seed)
     gold_program = data['program']
@@ -437,7 +250,6 @@ def get_positives_and_negatives(data, mode, seed):
     for candidate in candidates:
         if candidate['index'] not in gold_index:
             negative_candidates.append(candidate)
-    num_neg_cands = len(negative_candidates)
 
     k_pos = round(conf.num_cand / (conf.neg_ratio+1))
     if num_golds < k_pos:
@@ -457,122 +269,71 @@ def get_positives_and_negatives(data, mode, seed):
             random.shuffle(negative_candidates)
             positives = golds[:k_pos]
             negatives = negative_candidates[:k_neg]
+            # K_neg = conf.neg_ratio * conf.K_pos   # neg_ratio = num_of_neg / num_of_pos
+            # if num_golds >= conf.K_pos:
+            #     if num_neg_cands >= K_neg:
+            #         random.shuffle(golds)
+            #         random.shuffle(negative_candidates)
+            #         positives = golds[:conf.K_pos]
+            #         negatives = negative_candidates[:K_neg]
+            #     else:
+            #         num_pos = int((1/conf.neg_ratio) * num_neg_cands)            
+            #         num_neg = int(conf.neg_ratio * num_pos)                      
+            #         random.shuffle(golds)
+            #         random.shuffle(negative_candidates)
+            #         positives = golds[:num_pos]
+            #         negatives = negative_candidates[:num_neg]
+            # elif 0 < num_golds < conf.K_pos:
+            #     num_neg = int(conf.neg_ratio * num_golds)    
+            #     random.shuffle(negative_candidates)
+            #     positives = golds
+            #     negatives = negative_candidates[:num_neg]
+            # else:
+            #     positives = []
+            #     negatives = []
 
-        elif conf.sampling == 'hard':
-            # golds.sort(key=lambda x:x['question_score'])
-            # negative_candidates.sort(key=lambda x:x['program_score']) 
+        # elif conf.sampling == 'hard':
+        #     golds.sort(key=lambda x:x['question_score'])
+        #     negative_candidates.sort(key=lambda x:x['program_score']) 
+        #     num_hard = round(k_neg * conf.hard_ratio)
+        #     num_easy = k_neg - num_hard
+        #     hard_index = len(negative_candidates_scores)-num_hard
+        #     hard_negatives = [negative[0] for negative in negative_candidates_scores[hard_index:]]
+        #     easy_negatives = [negative[0] for negative in negative_candidates_scores[:num_easy]]
+        #     random.shuffle(golds)
+        #     positives = golds[:k_pos]
+        #     negatives = hard_negatives + easy_negatives     
+        
+        # elif conf.sampling == 'adjusted_hard':
+        #     golds.sort(key=lambda x:x['question_score'])
+        #     negative_candidates.sort(key=lambda x:x['program_score']) 
             # num_hard = round(k_neg * conf.hard_ratio)
             # num_easy = k_neg - num_hard
-            negative_candidates_scores = get_negatives_by_score(gold_program, negative_candidates)
-            num_hard = round(k_neg * conf.hard_ratio)
-            num_easy = k_neg - num_hard
-            hard_index = len(negative_candidates_scores)-num_hard
-            hard_negatives = [negative[0] for negative in negative_candidates_scores[hard_index:]]
-            easy_negatives = [negative[0] for negative in negative_candidates_scores[:num_easy]]
-            random.shuffle(golds)
-            positives = golds[:k_pos]
-            negatives = hard_negatives + easy_negatives     
-        
-        elif conf.sampling == 'adjusted_hard':
-            negative_candidates_scores = get_negatives_by_score(gold_program, negative_candidates)
-            num_hard = round(k_neg * conf.hard_ratio)
-            num_easy = k_neg - num_hard
-            fix_hard_index = len(negative_candidates_scores)-round(num_hard * conf.fix_ratio)
-            fix_easy_index = round(num_easy * conf.fix_ratio)
-            fix_hard_negatives = [negative[0] for negative in negative_candidates_scores[fix_hard_index:]]
-            fix_easy_negatives = [negative[0] for negative in negative_candidates_scores[:fix_easy_index]]
+            # fix_hard_index = len(negative_candidates_scores)-round(num_hard * conf.fix_ratio)
+            # fix_easy_index = round(num_easy * conf.fix_ratio)
+            # fix_hard_negatives = [negative[0] for negative in negative_candidates_scores[fix_hard_index:]]
+            # fix_easy_negatives = [negative[0] for negative in negative_candidates_scores[:fix_easy_index]]
             
-            rand_neg_num = k_neg - len(fix_hard_negatives) - len(fix_easy_negatives)
-            random_negatives = [negative[0] for negative in negative_candidates_scores[fix_easy_index:fix_hard_index]]
-            random_negatives = random.sample(random_negatives, rand_neg_num)
-            random.shuffle(golds)
-            positives = golds[:k_pos]
-            negatives = fix_hard_negatives + fix_easy_negatives + random_negatives
+            # rand_neg_num = k_neg - len(fix_hard_negatives) - len(fix_easy_negatives)
+            # random_negatives = [negative[0] for negative in negative_candidates_scores[fix_easy_index:fix_hard_index]]
+            # random_negatives = random.sample(random_negatives, rand_neg_num)
+            # random.shuffle(golds)
+            # positives = golds[:k_pos]
+            # negatives = fix_hard_negatives + fix_easy_negatives + random_negatives
     else:
         positives = golds
         negatives = negative_candidates
 
-    # # randomly get positive and negative candidates, satisfying the neg_ratio
-    # if mode == "train":
-    #     K_neg = conf.neg_ratio * conf.K_pos   # neg_ratio = num_of_neg / num_of_pos
-    #     if num_golds >= conf.K_pos:
-    #         if num_neg_cands >= K_neg:
-    #             random.shuffle(golds)
-    #             random.shuffle(negative_candidates)
-    #             positives = golds[:conf.K_pos]
-    #             negatives = negative_candidates[:K_neg]
-    #         else:
-    #             num_pos = int((1/conf.neg_ratio) * num_neg_cands)            
-    #             num_neg = int(conf.neg_ratio * num_pos)                      
-    #             random.shuffle(golds)
-    #             random.shuffle(negative_candidates)
-    #             positives = golds[:num_pos]
-    #             negatives = negative_candidates[:num_neg]
-    #     elif 0 < num_golds < conf.K_pos:
-    #         num_neg = int(conf.neg_ratio * num_golds)    
-    #         random.shuffle(negative_candidates)
-    #         positives = golds
-    #         negatives = negative_candidates[:num_neg]
-    #     else:
-    #         positives = []
-    #         negatives = []
-    # # test on all data
-    # else:
-    #     positives = golds
-    #     negatives = negative_candidates
-
     return positives, negatives
-
-
-def read_example(data, mode, seed):
-    org_index=data['original_index']       
-    question=data['question']
-    program=data['program']
-    candidates = get_positives_and_negatives(data, mode, seed)
-    positives=candidates[0]
-    negatives=candidates[1]
-    return QuestionExample(
-        org_index=org_index, 
-        question=question, 
-        program=program, 
-        positives=positives,
-        negatives=negatives)
-    
-
-# def read_examples(input_path, log_path, mode):
-#     write_log(log_path, "Readings "+input_path)
-#     with open(input_path) as file:
-#         input_data = json.load(file)
-#     examples=[]
-#     for data in input_data:
-#         examples.append(read_example(data, mode))
-#     return input_data, examples
-
-
-def read_examples(input_data, mode, seed):
-    examples=[]
-    for data in input_data:
-        examples.append(read_example(data, mode, seed))
-    return examples
-
-def load_dataset(input_path, log_path):
-    write_log(log_path, "Readings "+input_path)
-    with open(input_path) as file:
-        input_data = json.load(file)
-    return input_data
-
 
 
 
 """ Data Loader """
 class myDataLoader:
     def __init__(self, is_training, data, batch_size):
-        if conf.use_all_cands:
-            self.data = data
-        else:
-            self.data_pos = data[0]
-            self.data_neg = data[1]
-            self.data = self.data_pos + self.data_neg              
+        self.data_pos = data[0]
+        self.data_neg = data[1]
+        self.data = self.data_pos + self.data_neg              
         self.batch_size = batch_size
         self.is_training = is_training
         self.data_size = len(self.data)
@@ -602,10 +363,6 @@ class myDataLoader:
         self.shuffle_all_data()
 
     def shuffle_all_data(self):
-        if conf.use_all_cands:
-            self.data = self.data
-        else:
-            self.data = self.data_pos + self.data_neg
         random.shuffle(self.data)
         return
 
@@ -614,8 +371,6 @@ class myDataLoader:
         end_index = min((self.count + 1) * self.batch_size, self.data_size)
 
         self.count += 1
-        # print (self.count)
-
         batch_data = {"input_ids_q": [],
                       "input_mask_q": [],
                       "seg_ids_q": [],
@@ -745,12 +500,6 @@ def get_positive_weight(label, mode):     # compute positive-negative ratio in b
     num_negatives = len(label)-num_positives
     if num_positives == 0:          # when batch is composed of all negatives or all positives, apply constant positive weight to loss function (assumption)
         return conf.neg_ratio
-        # if mode == 'train':
-        #     return conf.neg_ratio
-        # elif mode == 'valid':
-        #     return valid_ratio
-        # elif mode == 'test':
-        #     return inf_ratio
     else:
         return num_negatives/num_positives
     
@@ -773,31 +522,24 @@ class EarlyStopping:
     
 
 """ Model training """
-def train(train_data, valid_data):
+def train():
     mode = 'train'  
     model = Biencoder(model_config.hidden_size, tokenizer)
     model.train()
 
-    # load train data
-    train_examples = read_examples(train_data, 'train', 0)
-    kwargs={'examples': train_examples, 'tokenizer': tokenizer}
-    write_log(log_path, "Starts converting training data to features")
+    # load data
     if conf.use_all_cands:
-        train_features = convert_to_features_all(**kwargs)
-    else:
+        write_log(log_path, "Readings "+ conf.train_original)
+        train_examples = sampling.get_examples(conf.train_original, conf.constant_file, conf.archive_path,
+                                               mode, 0, conf.q_score_available, conf.p_score_available,
+                                               conf.num_cand, conf.neg_ratio)
+        kwargs={'examples': train_examples, 'tokenizer': tokenizer}
+        write_log(log_path, "Starts converting training data to features")
         train_features = convert_to_features(**kwargs)
+    
     train_loader = myDataLoader(is_training=True, data=train_features, batch_size=conf.batch_size)
     total_steps = train_loader.num_batches * conf.epoch
-    print("total number of batches: ", train_loader.num_batches)
-
-    # load valid data
-    valid_examples = read_examples(valid_data, 'valid', 0)
-    kwargs={'examples': valid_examples, 'tokenizer': tokenizer}
-    write_log(log_path, "Starts converting validation data to features")
-    if conf.use_all_cands:
-        valid_features = convert_to_features_all(**kwargs)
-    else:
-        valid_features = convert_to_features(**kwargs)
+    write_log(log_path, "total number of batches: %d" %(train_loader.num_batches))
 
     # for optimization
     early_stop = EarlyStopping(patience=conf.patience)
@@ -818,20 +560,23 @@ def train(train_data, valid_data):
         scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps = total_steps*conf.warm_up_prop, num_training_steps=total_steps, last_epoch=checkpoint['epoch'])
     
     # starts training
+    write_log(log_path, "Starts training...")
     for ep in trange(ep_global, conf.epoch, desc="epoch"):
-        write_log(log_path, "Epoch %d starts" % (ep))
+        write_log(log_path, "Epoch %d starts" %(ep))
         # sampling every epoch
         if (conf.resume==False and ep > 0) or (conf.resume==True and ep > ep_global):
-            train_examples = read_examples(train_data, 'train', ep)
+            if not conf.use_all_cands:
+                train_data, train_examples = read_examples(conf.train_file, 'train', ep)
+            elif conf.use_all_cands:
+                write_log(log_path, "Readings "+ conf.train_original)
+                train_examples = sampling.get_examples(conf.train_original, conf.constant_file, conf.archive_path,
+                                                    mode, ep, conf.q_score_available, conf.p_score_available,
+                                                    conf.num_cand, conf.neg_ratio)
             kwargs={'examples': train_examples, 'tokenizer': tokenizer}
             write_log(log_path, "Starts converting training data to features")
-            if conf.use_all_cands:
-                train_features = convert_to_features_all(**kwargs)
-            else:
-                train_features = convert_to_features(**kwargs)
             train_loader = myDataLoader(is_training=True, data=train_features, batch_size=conf.batch_size)
             total_steps = train_loader.num_batches * conf.epoch
-            print("total number of batches: ", train_loader.num_batches)
+            write_log(log_path, "total number of batches: %d" %(train_loader.num_batches))
 
         train_loader.reset()
         for step, batch in enumerate(train_loader):
@@ -1067,7 +812,7 @@ def retrieve_evaluate(scores, query_index, cand_index, cand_question, cand_progr
 
 
 """ Inference """
-def test(test_data):
+def test():
 
     mode = 'test'  
     model = Biencoder(model_config.hidden_size, tokenizer)
@@ -1076,16 +821,7 @@ def test(test_data):
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
 
-
-    # load test data
-    test_examples = read_examples(test_data, 'test', 0)
-    kwargs={'examples': test_examples, 'tokenizer': tokenizer}
-    write_log(log_path, "Starts converting test data to features")
-    if conf.use_all_cands:
-        test_features = convert_to_features_all(**kwargs)
-    else:
-        test_features = convert_to_features(**kwargs)
-    data_iterator = myDataLoader(is_training=False, data=test_features, batch_size=conf.batch_size_test)
+    data_iterator = myDataLoader(is_training=False, data=inf_features, batch_size=conf.batch_size_test)
     
     scores = []
     query_index = []
@@ -1158,36 +894,32 @@ if __name__ == '__main__':
         write_log(log_path, "#######################################################")
 
         """Import dataset and convert info features"""
-        train_data = load_dataset(conf.train_file, log_path)
-        valid_data = load_dataset(conf.valid_file, log_path)
+        if not conf.use_all_cands:
+            train_data, train_examples = read_examples(conf.train_file, 'train', 0)
+            kwargs={'examples': train_examples, 'tokenizer': tokenizer}
+            write_log(log_path, "Starts converting training data to features")
+            train_features = convert_to_features(**kwargs)
 
-        # train_data, train_examples = read_examples(conf.train_file, log_path, 'train')
-        # kwargs={'examples': train_examples, 'tokenizer': tokenizer}
-        # write_log(log_path, "Starts converting training data to features")
-        # train_features = convert_to_features(**kwargs)
+            valid_data, valid_examples = read_examples(conf.valid_file, 'valid', 0)
+            kwargs['examples'] = valid_examples
+            write_log(log_path, "Starts converting validation data to features")
+            valid_features = convert_to_features(**kwargs)
+            valid_ratio = len(valid_features[1])/len(valid_features[0])     
 
-        # valid_data, valid_examples = read_examples(conf.valid_file, log_path, 'valid')
-        # kwargs['examples'] = valid_examples
-        # write_log(log_path, "Starts converting validation data to features")
-        # valid_features = convert_to_features(**kwargs)
-  
+        elif conf.use_all_cands:
+            valid_data, valid_examples = read_examples(conf.valid_file, 'valid', 0)
+            kwargs={'examples': valid_examples, 'tokenizer': tokenizer}
+            write_log(log_path, "Starts converting validation data to features")
+            valid_features = convert_to_features(**kwargs)
+            valid_ratio = len(valid_features[1])/len(valid_features[0])     
 
-        # if not conf.use_all_cands:
-        #     valid_ratio = len(valid_features[1])/len(valid_features[0])     
-        # else:
-        #     num_pos=0
-        #     for feature in valid_features:
-        #         num_pos+=feature['label']
-        #     num_neg = len(valid_features)-num_pos
-        #     valid_ratio = num_neg/num_pos
 
         if not conf.resume:
             wandb.init(project="case_retriever", notes=conf.dir_name)
         elif conf.resume:
             wandb.init(project="case_retriever", notes=conf.dir_name, resume="must", id=conf.wandb_id)
 
-        write_log(log_path, "Starts training...")
-        train(train_data, valid_data)
+        train()
 
     else:
         """Set path"""
@@ -1203,26 +935,13 @@ if __name__ == '__main__':
         write_log(log_path, "#######################################################")
 
         """Import dataset and convert info features"""
-        test_data = load_dataset(conf.inference_file, log_path)
-        # inf_data, inf_examples = read_examples(conf.inference_file, log_path, 'test')
-        # kwargs={'examples': inf_examples, 'tokenizer': tokenizer}
-        # write_log(log_path, "Starts converting data to features")
-        # if not conf.use_all_cands:
-        #     inf_features = convert_to_features(**kwargs)
-        # else:
-        #     inf_features = convert_to_features_all(**kwargs)
-
-        # if not conf.use_all_cands:
-        #     inf_ratio = len(inf_features[1])/len(inf_features[0])
-        # else:
-        #     num_pos=0
-        #     for feature in inf_features:
-        #         num_pos+=feature['label']
-        #     num_neg = len(inf_features)-num_pos
-        #     inf_ratio = num_neg/num_pos
+        inf_data, inf_examples = read_examples(conf.inference_file, 'test', 0)
+        kwargs={'examples': inf_examples, 'tokenizer': tokenizer}
+        write_log(log_path, "Starts converting data to features")
+        inf_features = convert_to_features(**kwargs)
       
         write_log(log_path, "Inference starts...")
-        test(test_data)
+        test()
 
 
    

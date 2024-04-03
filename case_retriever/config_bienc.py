@@ -3,36 +3,32 @@ class parameters():
     """Set path"""
     root_path = "/shared/s3/lab07/yikyung/cbr/"
     output_path = '/shared/s3/lab07/yikyung/cbr/case_retriever/output/train/'         # train, inference
-
     cache_dir = "/home/s3/yikyungkim/research/cbr/cache"
-    archive_path = '/shared/s3/lab07/yikyung/cbr/case_retriever/archive/'
 
     """Set dataset path"""
-    train_file = root_path + "dataset/case_retriever/train_score_all.json"    
-    valid_file = root_path + "dataset/case_retriever/dev_score_200.json"
-    
+    train_file = root_path + "dataset/case_retriever/train_score_100.json"    
+    valid_file = root_path + "dataset/case_retriever/dev_score_100.json"
+
+    train_original = root_path + "dataset/finqa_original/train.json"
+    constant_file = root_path + "dataset/finqa_original/constant_list.txt"
+    archive_path = root_path + 'dataset/archives/'
 
     """ For inference """
     # we need inference file for train, valid, and test 
     # saved_model_path = '/shared/s3/lab07/yikyung/cbr/case_retriever/output/train/bi_bert-base_q+p/model/epoch_18'    
-    # saved_model_path = '/shared/s3/lab07/yikyung/cbr/case_retriever/output/train/bi_bert-base-ops_q+p/model/epoch_18' #qandp
-    # saved_model_path = '/shared/s3/lab07/yikyung/cbr/case_retriever/output/train/bi_bert-base-ops_p/model/epoch_15' # ponly
-
-    # inference_file = root_path + "dataset/case_retriever/new_train_ops.json"    
-    # inference_file = root_path + "dataset/case_retriever/new_dev_ops.json"
-    # inference_file = root_path + "dataset/case_retriever/new_test_ops.json"    
     # inference_file = root_path + "dataset/case_retriever/new_train.json"    
     # inference_file = root_path + "dataset/case_retriever/new_dev.json"    
     # inference_file = root_path + "dataset/case_retriever/new_test.json"    
 
-    resume = True
+    """ Resume training """
+    resume = False
     resume_model = '/shared/s3/lab07/yikyung/cbr/case_retriever/output/train/bi_roberta-base_q+p_rand_200_single/model/epoch_2' 
     wandb_id = '149k1iyy'           
 
 
     """Set model"""  
     mode = 'train'                   # train, test
-    dir_name = 'bi_roberta-base_q+p_rand_200_single'        
+    dir_name = 'bi_roberta-base_q+p_ep'        
 
     # model = 'bert'       
     # bert_size = "bert-base-uncased"         
@@ -47,24 +43,26 @@ class parameters():
     data_type = 'base'
     # num_test = 60
 
-    archive_available = False       # True: use archive, False: use data
 
     device = "cuda"
     epoch = 30
     max_seq_len = 128       
-    batch_size = 128                 
-    batch_size_test = 128
+    batch_size = 64                 
+    batch_size_test = 64
 
     learning_rate = 2e-5       
     warm_up_prop = 0.2  # scheduler 
     patience = 10       # early stopping
     dropout_rate = 0.1  # used for cross-encoder
 
-    use_all_cands = True    # sampling from all candiates or not (True: get samples from all candidates, False: get samples from top-100)
-    num_cand = 200 
+    num_cand = 100 
     # K_pos = 60            # number of positives examples
     sampling='random'       # how to get samples. random, hard, adjusted_hard
     neg_ratio = 2         # ratio of negative examples to positive examples
+
+    use_all_cands = False    # sampling from all candiates or not (True: get samples from all candidates, False: get samples from top-100)
+    q_score_available = True
+    p_score_available = True
 
     hard_ratio = 0.7      # ratio of hard negatives in negatives
     fix_ratio = 0.5       # ratio of fixed hard and easy negatives in hard and easy negatives (rest = random)
