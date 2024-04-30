@@ -7,7 +7,6 @@ from transformers import RobertaModel, RobertaTokenizer
 
 import json
 import pickle
-from tqdm import tqdm
 import collections
 import random
 
@@ -69,7 +68,7 @@ def question_score(questions, embedding):
 
     cosine_scores = cos_sim(embedding, embedding)
     scores={}
-    for i in tqdm(range(len(questions))):
+    for i in range(len(questions)):
         scores[i]=[]
         for j in range(len(questions)):
             if i==j:
@@ -82,7 +81,7 @@ def question_score_test(train_size, test_size, train_embedding, test_embedding):
 
     cosine_scores = cos_sim(test_embedding, train_embedding)
     scores={}
-    for i in tqdm(range(test_size)):
+    for i in range(test_size):
         scores[i]=[]
         for j in range(train_size):
             scores[i].append((j, cosine_scores[i][j].item()))
@@ -192,7 +191,7 @@ def distance_score(query, cand, constants, weight):
 def program_score(programs, constants, ops_weight, threshold):
     scores={}
     golds={}
-    for i in tqdm(range(len(programs))):
+    for i in range(len(programs)):
         scores[i]=[]
         golds[i]=[]
         query = programs[i]
@@ -210,7 +209,7 @@ def program_score(programs, constants, ops_weight, threshold):
 def program_score_test(train_programs, test_programs, constants, ops_weight, threshold):
     scores={}
     golds={}
-    for i in tqdm(range(len(test_programs))):
+    for i in range(len(test_programs)):
         scores[i]=[]
         golds[i]=[]
         query = test_programs[i]

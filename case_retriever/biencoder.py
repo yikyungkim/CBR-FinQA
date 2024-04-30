@@ -22,6 +22,7 @@ import wandb
 
 from config_bienc import parameters as conf
 import sampling as sampling
+import biencoder_test as inference
 
 
 """ Uility functions """
@@ -215,119 +216,6 @@ def read_all_examples(input_data, mode, q_scores, p_scores, gold_cands, non_gold
 
 
 """ Converting examples to model input (features) """
-# def get_model_input(tokenizer, question, max_seq_len, cls_token, sep_token):
-#     question_token = tokenize(tokenizer, question)
-#     tokens = [cls_token]+question_token+[sep_token]
-#     seg_ids = [0]*len(tokens)
-    
-#     if len(tokens) > max_seq_len:
-#         print('too long')
-#         tokens = tokens[:max_seq_len-1]
-#         tokens += [sep_token]
-#         seg_ids = seg_ids[:max_seq_len]
-
-#     input_ids = tokenizer.convert_tokens_to_ids(tokens)
-#     input_mask = [1]*len(input_ids)
-
-#     padding = [0]*(max_seq_len-len(input_ids))
-#     input_ids.extend(padding)
-#     input_mask.extend(padding)
-#     seg_ids.extend(padding)
-
-#     assert len(input_ids)==max_seq_len
-#     assert len(input_mask)==max_seq_len
-#     assert len(seg_ids)==max_seq_len  
-
-#     return input_ids, input_mask, seg_ids
-
-
-
-# def convert_qa_example(example, tokenizer, max_seq_len, cls_token, sep_token, input_concat, program_type):
-#     pos_features=[]
-#     neg_features=[]
-#     question=example.question
-#     index=example.org_index
-#     input_ids_q, input_mask_q, seg_ids_q = get_model_input(tokenizer, question, max_seq_len, cls_token, sep_token)
-
-#     for positive in example.positives:
-#         gold_ques = positive['question']
-#         if program_type == "prog":
-#             gold_prog = positive['program'][:-5]
-#         elif program_type == "ops":
-#             gold_prog = operators_in_program(positive['program'])
-
-#         if input_concat == "qandp":
-#             gold_cand = gold_ques + " " + '[QNP]' + " " + gold_prog
-#         elif input_concat == "ponly":
-#             gold_cand = gold_prog
-#         elif input_concat == "qonly":
-#             gold_cand = gold_ques
-
-#         input_ids_c, input_mask_c, seg_ids_c = get_model_input(tokenizer, gold_cand, max_seq_len, cls_token, sep_token)
-#         features={}
-#         features['input_ids_q']=input_ids_q
-#         features['input_mask_q']=input_mask_q
-#         features['seg_ids_q']=seg_ids_q
-#         features['input_ids_c']=input_ids_c
-#         features['input_mask_c']=input_mask_c
-#         features['seg_ids_c']=seg_ids_c
-#         features['label']=1
-#         features['query_index']=index
-#         features['cand_index']=positive['index']
-#         features['cand_question']=positive['question']
-#         features['cand_program']=positive['program']
-#         pos_features.append(features)
-    
-#     for negative in example.negatives:
-#         neg_ques = negative['question']                                   
-#         if program_type == "prog":
-#             neg_prog = negative['program'][:-5]
-#         elif program_type == "ops":
-#             neg_prog = operators_in_program(negative['program'])
-
-#         if input_concat == "qandp":
-#             neg_cand = neg_ques + " " + '[QNP]' + " " + neg_prog
-#         elif input_concat == "ponly":
-#             neg_cand = neg_prog
-#         elif input_concat == "qonly":
-#             neg_cand = neg_ques
-
-#         input_ids_c, input_mask_c, seg_ids_c = get_model_input(tokenizer, neg_cand, max_seq_len, cls_token, sep_token)
-#         features={}
-#         features['input_ids_q']=input_ids_q
-#         features['input_mask_q']=input_mask_q
-#         features['seg_ids_q']=seg_ids_q
-#         features['input_ids_c']=input_ids_c
-#         features['input_mask_c']=input_mask_c
-#         features['seg_ids_c']=seg_ids_c
-#         features['label']=0
-#         features['query_index']=index
-#         features['cand_index']=negative['index']
-#         features['cand_question']=negative['question']
-#         features['cand_program']=negative['program']
-#         neg_features.append(features)
-
-#     return pos_features, neg_features
-
-
-
-# def convert_to_features(examples, tokenizer):
-#     pos_features=[]
-#     neg_features=[]
-#     for (index, example) in enumerate(examples):
-#         pos, neg = convert_qa_example(
-#             example=example,
-#             tokenizer=tokenizer,
-#             max_seq_len=conf.max_seq_len,
-#             cls_token=tokenizer.cls_token,
-#             sep_token=tokenizer.sep_token,
-#             input_concat=conf.input_concat,
-#             program_type=conf.program_type
-#         )
-#         pos_features.extend(pos)
-#         neg_features.extend(neg)
-#     return pos_features, neg_features
-
 
 def convert_to_features(examples, tokenizer):
     pos_features=[]
@@ -342,7 +230,6 @@ def convert_to_features(examples, tokenizer):
         pos_features.extend(pos)
         neg_features.extend(neg)
     return pos_features, neg_features
-
 
 
 def convert_qa_example(tokenizer, example, input_ids_q, input_mask_q, seg_ids_q):
@@ -633,7 +520,7 @@ def train():
     model = Biencoder(model_config.hidden_size, tokenizer)
     model.train()
 
-    # load data
+    """ Load training data """
     if not conf.use_all_cands:
         write_log(log_path, "Readings "+ conf.train_file)
         train_data = load_data(conf.train_file)
@@ -693,14 +580,52 @@ def train():
         write_log(log_path, "Time for converting training data to input features: %.3f" %record_time)
         
 
+    """ Load validation data """
     # load validation data (use cases from valid set)
-    write_log(log_path, "Readings "+ conf.valid_file)
+    # write_log(log_path, "Readings "+ conf.valid_file)
+    # record_start = time.time()
+    # valid_examples = read_examples(load_data(conf.valid_file), 'valid', 0)
+    # write_log(log_path, "Starts converting validation data to features")
+    # valid_features = convert_to_features(valid_examples, tokenizer)
+    # record_time = time.time() - record_start
+    # write_log(log_path, "Time for loading and converting validation data to input features: %.3f" %record_time)
+
+    # load validation data (use cases form training set)
+    write_log(log_path, "Readings "+ conf.valid_original + " and " + conf.train_original)
     record_start = time.time()
-    valid_examples = read_examples(load_data(conf.valid_file), 'valid', 0)
-    write_log(log_path, "Starts converting validation data to features")
-    valid_features = convert_to_features(valid_examples, tokenizer)
+    kwargs_load_valid = {
+        'finqa_train': conf.train_original,
+        'finqa_test': conf.valid_original,
+        'constants_path': conf.constant_file,
+        'archive_path': conf.archive_path,
+        'mode': 'valid',
+        'q_score_available': conf.q_score_avail_test,
+        'p_score_available': conf.p_score_avail_test,
+        'candidates_available': conf.candidates_avail_test,
+        'num_test': conf.num_test
+    }
+    train_data, valid_data, q_scores_valid, p_scores_valid, gold_indices_valid, constants, candidates_valid = inference.load_dataset_test(**kwargs_load_valid)
     record_time = time.time() - record_start
-    write_log(log_path, "Time for loading and converting validation data to input features: %.3f" %record_time)
+    write_log(log_path, "Time for loading validation data: %.3f" %record_time)
+
+    write_log(log_path, "Get validation examples...")
+    record_start = time.time()
+    valid_examples = inference.get_examples_test(train_data, valid_data, q_scores_valid, p_scores_valid, constants, candidates_valid)
+    record_time = time.time() - record_start
+    write_log(log_path, "Time for getting validation examples: %.3f" %record_time)
+    
+    if conf.test_feature_available:
+        write_log(log_path, "Loading validation features")
+        valid_features = pickle.load(open(conf.archive_path + 'valid_' + str(conf.num_test) + '_features', 'rb'))
+    
+    else:
+        write_log(log_path, "Starts converting validation data to features")
+        record_start = time.time()
+        valid_features, neg_features = convert_to_features(valid_examples, tokenizer)
+        record_time = time.time() - record_start
+        write_log(log_path, "Time for converting validation data to input features: %.3f" %record_time)
+        sampling.save_archive(conf.archive_path, valid_features, 'valid_' + str(conf.num_test) + '_features')
+
 
     train_loader = myDataLoader(is_training=True, data=train_features, batch_size=conf.batch_size)
     total_steps = train_loader.num_batches * conf.epoch
@@ -732,6 +657,7 @@ def train():
         if (conf.resume==False and ep > 0) or (conf.resume==True and ep > ep_global):
             if not conf.use_all_cands:
                 train_examples = read_examples(train_data, 'train', ep)
+                
             elif conf.use_all_cands:                
                 record_start = time.time()
                 kwargs_examples={
@@ -808,7 +734,8 @@ def train():
         results_path_cnt = os.path.join(results_path, 'prediction', str(ep))
         os.makedirs(results_path_cnt, exist_ok=True)
         write_log(log_path, "----------------------Epoch %d Model Evaluation" % (ep))
-        val_loss = evaluate(valid_features, model, results_path_cnt, "valid")
+        # val_loss = evaluate(valid_features, model, results_path_cnt, "valid")
+        val_loss = evaluate(valid_data, gold_indices_valid, valid_features, model, results_path_cnt, "valid")
         wandb.log({"loss/valid_loss": val_loss})
         record_time = time.time() - record_start
         write_log(log_path, "Time for evaluating model: %.3f" %record_time)
@@ -824,12 +751,13 @@ def train():
 
 
 """ Model Evaluation """
-def evaluate(features, model, results_path_cnt, mode):
+# def evaluate(features, model, results_path_cnt, mode):
+def evaluate(valid_data, gold_indices_valid, valid_features, model, results_path_cnt, mode):
 
     results_path_cnt_mode = os.path.join(results_path_cnt, mode)
     os.makedirs(results_path_cnt_mode, exist_ok=True)
 
-    data_iterator = myDataLoader(is_training=False, data=features, batch_size=conf.batch_size_test)
+    data_iterator = myDataLoader(is_training=False, data=valid_features, batch_size=conf.batch_size_test)
 
     total_loss = 0.0
     scores = []
@@ -866,8 +794,8 @@ def evaluate(features, model, results_path_cnt, mode):
 
     output_prediction_file = os.path.join(results_path_cnt_mode, "predictions.json")
     if mode == "valid":
-        metrics = retrieve_evaluate(scores, query_index, cand_index, cand_question, cand_program, output_prediction_file, conf.valid_file, topk=conf.topk)
-
+        # metrics = retrieve_evaluate(scores, query_index, cand_index, cand_question, cand_program, output_prediction_file, conf.valid_file, topk=conf.topk)
+        metrics = inference.retrieve_evaluate_test(valid_data, gold_indices_valid, scores, query_index, cand_index, cand_question, cand_program, output_prediction_file, conf.topk)
     val_loss = total_loss/data_iterator.num_batches
     write_log(log_path, "validation loss = %.3f" % (val_loss))
     write_log(log_path, metrics)
