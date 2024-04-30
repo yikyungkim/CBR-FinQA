@@ -1,10 +1,10 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
+
 from transformers import BertModel, BertTokenizer
 from transformers import RobertaModel, RobertaTokenizer
 
-import numpy as np
 import json
 import pickle
 from tqdm import tqdm
@@ -28,13 +28,13 @@ def save_archive(archive_path, data, output_name):
 
 " ------- functions for questions --------"
 def get_embedding(questions):
-    # bert_size = "bert-base-uncased"
-    # tokenizer = BertTokenizer.from_pretrained(bert_size)
-    # model = BertModel.from_pretrained(bert_size)
-
-    bert_size = "roberta-base"
-    tokenizer = RobertaTokenizer.from_pretrained(bert_size)
+    bert_size = "bert-base-uncased"
+    tokenizer = BertTokenizer.from_pretrained(bert_size)
     model = BertModel.from_pretrained(bert_size)
+
+    # bert_size = "roberta-base"
+    # tokenizer = RobertaTokenizer.from_pretrained(bert_size)
+    # model = BertModel.from_pretrained(bert_size)
 
     model = nn.DataParallel(model)
     model.eval()
@@ -77,20 +77,18 @@ def question_score(questions, embedding):
             scores[i].append((j, cosine_scores[i][j].item()))
     return scores
 
-def sort_questions(scores, num_cand):
-    # if use_all_cands:
-    #     print('Starts sort questions by similarity')
-    #     sorted_scores={}
-    #     for i in tqdm(range(len(scores))):
-    #         sorted_q_score = sorted(scores[i], key=lambda x:x[1], reverse=True)
-    #         sorted_scores[i] = sorted_q_score
-    # else:
-    print('Starts getting top '+str(num_cand)+' similar questions')
-    sorted_scores={}
-    for i in tqdm(range(len(scores))):
-        top100 = sorted(scores[i], key=lambda x:x[1], reverse=True)[:num_cand]
-        sorted_scores[i] = top100
-    return sorted_scores
+
+def question_score_test(train_size, test_size, train_embedding, test_embedding):
+
+    cosine_scores = cos_sim(test_embedding, train_embedding)
+    scores={}
+    for i in tqdm(range(test_size)):
+        scores[i]=[]
+        for j in range(train_size):
+            scores[i].append((j, cosine_scores[i][j].item()))
+    return scores
+
+
 
 
 " ------- functions for programs --------"
@@ -209,9 +207,22 @@ def program_score(programs, constants, ops_weight, threshold):
     return scores, golds
 
 
+def program_score_test(train_programs, test_programs, constants, ops_weight, threshold):
+    scores={}
+    golds={}
+    for i in tqdm(range(len(test_programs))):
+        scores[i]=[]
+        golds[i]=[]
+        query = test_programs[i]
+        for j in range(len(train_programs)):
+            cand = train_programs[j]
+            score = distance_score(query, cand, constants, ops_weight)
+            scores[i].append((j, score))
+            if score >= threshold:
+                golds[i].append(j)
+    return scores, golds
 
 
-"------- Functions to build dataset-----"
 # convert original program to masked program (mask arguments)
 def masked_program(program, constants):
     program = program_tokenization(program)
@@ -235,93 +246,90 @@ def masked_program(program, constants):
 
 
 
-"""Added for random sampling"""
+"------- Functions for sampling training set -----"
 
 def load_dataset(finqa_dataset_path, constants_path, archive_path, 
-                 mode, q_score_available, p_score_available):
+                 mode, q_score_available, p_score_available, candidates_available, 
+                 pos_pool, neg_pool, neg_ratio):
 
-    # get questions, programs, and constants
     data = json.load(open(finqa_dataset_path))
-    questions = [data[i]['qa']['question'] for i in range(len(data))]
-    programs = [data[i]['qa']['program'] for i in range(len(data))]
     constants = read_txt(constants_path)
 
-    # get question embedding and compute similarity score
-    print('starts getting question score')
+    # get question embedding and compute question similarity score
     if q_score_available:
-        q_scores = pickle.load(open(archive_path+mode+'_scores_question', 'rb'))
+        print('starts loading question score')
+        q_scores = pickle.load(open(archive_path + mode + '_scores_question', 'rb'))
     else:
+        print('starts getting question score')
+        questions = [data[i]['qa']['question'] for i in range(len(data))]
         embedding = get_embedding(questions)
         q_scores = question_score(questions, embedding)
-        save_archive(archive_path, q_scores, mode+'_scores_question')
+        save_archive(archive_path, q_scores, mode + '_scores_question')
 
     # compute program score
-    print('starts getting program score and gold indices')
-    ops_weight = 0.8
-    threshold = 0.9
     if p_score_available:
-        p_scores = pickle.load(open(archive_path+mode+'_scores_program', 'rb'))                
-        gold_indices = pickle.load(open(archive_path+mode+'_gold_indices', 'rb'))                
+        print('starts loading program score and gold indices')
+        p_scores = pickle.load(open(archive_path + mode + '_scores_program', 'rb'))                
+        gold_indices = pickle.load(open(archive_path + mode + '_gold_indices', 'rb'))                
     else:
+        print('starts getting program score and gold indices')
+        ops_weight = 0.8
+        threshold = 0.9
+        programs = [data[i]['qa']['program'] for i in range(len(data))]
         p_scores, gold_indices = program_score(programs, constants, ops_weight, threshold)
-        save_archive(archive_path, p_scores, mode+'_scores_program')
-        save_archive(archive_path, gold_indices, mode+'_gold_indices')
+        save_archive(archive_path, p_scores, mode + '_scores_program')
+        save_archive(archive_path, gold_indices, mode + '_gold_indices')
 
-    return data, q_scores, p_scores, gold_indices, constants
+    # sort by question score and get case pool
+    if candidates_available:
+        print('starts loading question similar candidates')
+        gold_cands = pickle.load(open(archive_path + mode + '_' + str(pos_pool) + '_gold_candidates', 'rb'))
+        non_gold_cands = pickle.load(open(archive_path + mode + '_' + str(neg_pool) + '_non_gold_candidates', 'rb'))
+    else:
+        print('starts getting question similar candidates')
+        gold_cands, non_gold_cands = get_question_similar_candidates(data, q_scores, gold_indices, pos_pool, neg_pool, neg_ratio)
+        save_archive(archive_path, gold_cands, mode + '_' + str(pos_pool) + '_gold_candidates')
+        save_archive(archive_path, non_gold_cands, mode + '_' + str(neg_pool) + '_non_gold_candidates')
+
+    return data, q_scores, p_scores, gold_indices, constants, gold_cands, non_gold_cands
 
 
-def get_random_samples(data, constants, seed, index, q_scores, p_scores, gold_index, k_pos, k_neg):
+def get_question_similar_candidates(data, q_scores, gold_indices, train_size, neg_pool, neg_ratio):
 
-    if k_pos==0:
-        return [], []
-
-    non_gold_index = []
-    for j in range(len(data)):
-        if j!=index and j not in gold_index:
-            non_gold_index.append(j)
-
-    random.seed(seed)
-    random.shuffle(gold_index)
-    random.shuffle(non_gold_index)
-    positive_index = gold_index[:k_pos]
-    negative_index = non_gold_index[:k_neg]
-
-    # print('seed: ', seed)
-    # print('positive_index: ', positive_index)
-    # print('negative_index: ', negative_index)
-
-    positives=[]
-    for c_index in positive_index:
-        candidate={}
-        candidate['index']=c_index
-        candidate['question']=data[c_index]['qa']['question']
-        candidate['program']=masked_program(data[c_index]['qa']['program'], constants)
-        if c_index > index:
-            s_index = c_index-1
+    gold_cands={}
+    non_gold_cands={}
+    for i in range(len(data)):
+        gold_cands[i]=[]
+        non_gold_cands[i]=[]
+        q_score = q_scores[i]
+        gold_index = gold_indices[i]
+        k_pos = round(train_size / (neg_ratio+1))
+        if len(gold_index) < k_pos:     # we will take (k_pos * 3) number of candidates
+            k_pos = len(gold_index)
+        if k_pos==0:
+            gold_candidates=[]
+            non_gold_candidates=[]
         else:
-            s_index = c_index
-        candidate['question_score']=q_scores[index][s_index][1]
-        candidate['program_score']=p_scores[index][s_index][1]
-        positives.append(candidate)
+            gold_pair=[]                # get all golds and all non-golds
+            non_gold_pair=[]
+            for (c_index, score) in q_score:
+                if c_index in gold_index:
+                    gold_pair.append((c_index, score))
+                else:
+                    non_gold_pair.append((c_index, score))
     
-    negatives=[]
-    for c_index in negative_index:
-        candidate={}
-        candidate['index']=c_index
-        candidate['question']=data[c_index]['qa']['question']
-        candidate['program']=masked_program(data[c_index]['qa']['program'], constants)
-        if c_index > index:
-            s_index = c_index-1
-        else:
-            s_index = c_index
-        candidate['question_score']=q_scores[index][s_index][1]
-        candidate['program_score']=p_scores[index][s_index][1]
-        negatives.append(candidate)
+            # sort by question score and get top-(k_pos*3) candidates
+            pos_pool = k_pos * 3
+            gold_candidates_pair = sorted(gold_pair, key=lambda x:x[1], reverse=True)[:pos_pool]
+            non_gold_candidates_pair = sorted(non_gold_pair, key=lambda x:x[1], reverse=True)[:neg_pool]
+
+            gold_candidates = [index for (index, score) in gold_candidates_pair]
+            non_gold_candidates = [index for (index, score) in non_gold_candidates_pair]
+            
+        gold_cands[i]=gold_candidates
+        non_gold_cands[i]=non_gold_candidates
     
-    # print('positives: ', positives)
-    # print('negatives: ', negatives)
-    
-    return positives, negatives
+    return gold_cands, non_gold_cands
 
 
 
@@ -331,34 +339,27 @@ class QuestionExample(
     "org_index, question, program, positives, negatives")):
     def convert_example(self,):
         return 
-
-
-def get_examples(finqa_dataset_path, constants_path, archive_path, 
-                 mode, seed, q_score_available, p_score_available,
-                 num_cand, neg_ratio):
     
-    data, q_scores, p_scores, gold_indices, constants = load_dataset(finqa_dataset_path, constants_path, archive_path, mode, q_score_available, p_score_available)
+def get_examples(data, q_scores, p_scores, gold_indices, gold_cands, non_gold_cands, constants, sampling, seed, train_size, neg_ratio):
 
-    print('starts random sampling and get examples')
     examples=[]
-    for i in tqdm(range(len(data))):
+    for i in range(len(data)):
         org_index = i
         question = data[i]['qa']['question']
         program = masked_program(data[i]['qa']['program'], constants)
+        q_score = q_scores[i]
+        p_score = p_scores[i]
         gold_index = gold_indices[i]
-        k_pos = round(num_cand / (neg_ratio+1))
+        k_pos = round(train_size / (neg_ratio+1))
         if len(gold_index) < k_pos:
             k_pos = len(gold_index)
         k_neg = k_pos * neg_ratio
-
-        # print('org_index: ', org_index)
-        # print('question: ', question)
-        # print('program: ', program)
-        # print('gold_index: ', gold_index)
-        # print('k_pos: ', k_pos)
-        # print('k_neg: ', k_neg)
-
-        positives, negatives = get_random_samples(data, constants, seed, i, q_scores, p_scores, gold_index, k_pos, k_neg)
+        gold_candidates = gold_cands[i]
+        non_gold_candidates = non_gold_cands[i]
+        if k_pos==0:
+            positives, negatives = [], []
+        else:
+            positives, negatives = get_random_samples(data, constants, sampling, seed, i, q_score, p_score, gold_candidates, non_gold_candidates, k_pos, k_neg)
 
         example = QuestionExample(
             org_index = org_index,
@@ -371,20 +372,76 @@ def get_examples(finqa_dataset_path, constants_path, archive_path,
     return examples
 
         
-
-
-# if __name__ == '__main__':
-#     finqa_dataset_path = '/shared/s3/lab07/yikyung/cbr/dataset/finqa_original/train.json'
-#     constants_path = '/shared/s3/lab07/yikyung/cbr/dataset/finqa_original/constant_list.txt'
-#     archive_path = '/shared/s3/lab07/yikyung/cbr/dataset/archives/'
-#     mode = 'train'
-#     seed = 0
-#     q_score_available = True
-#     p_score_available = True
-#     num_cand = 10
-#     neg_ratio = 2
-#     examples = get_examples(finqa_dataset_path, constants_path, archive_path, 
-#                  mode, seed, q_score_available, p_score_available,
-#                  num_cand, neg_ratio)
+def get_random_samples(data, constants, sampling, seed, index, q_score, p_score, gold_index, non_gold_index, k_pos, k_neg):
     
-#     print(examples)
+    # program score for non-golds
+    non_gold_pair=[]
+    non_gold_score=[]
+    min_p_score = min([score for (c_index, score) in p_score])      
+    for c_index in non_gold_index:
+        if c_index > index:     
+            s_index = c_index-1         # if i==j, the score was skipped when we created q_score and p_score
+        else:
+            s_index = c_index
+        score = p_score[s_index][1]
+        non_gold_score.append(score - min_p_score)                  # to make all scores greater than 0 (scaling)
+        non_gold_pair.append((c_index, score - min_p_score))
+    
+    random.seed(seed)
+    if sampling=='random':
+        positive_index = random.sample(gold_index, k_pos)
+        negative_index = random.sample(non_gold_index, k_neg)
+
+    elif sampling=='hard':
+        positive_index = random.sample(gold_index, k_pos)
+        negative_index = random.choices(non_gold_index, weights=non_gold_score,  k=k_neg)
+    
+    elif sampling=='mixed':
+        positive_index = random.sample(gold_index, k_pos)
+    
+        non_gold_pair = sorted(non_gold_pair, key=lambda x:x[1], reverse=True)  # sort non-golds by program score
+
+        num_hard = round(k_neg/2)       # 50% hard
+        non_gold_pair_hard = non_gold_pair[:num_hard]
+        negative_index_hard = [index for (index, score) in non_gold_pair_hard]
+
+        num_sampled = k_neg-num_hard    # 50% sampled with weights based on program score
+        non_gold_pair_leftover = non_gold_pair[num_hard:]
+        non_gold_index_leftover = [index for (index, score) in non_gold_pair_leftover]
+        non_gold_score_leftover = [score for (index, score) in non_gold_pair_leftover]
+        negative_index_sampled = random.choices(non_gold_index_leftover, weights=non_gold_score_leftover, k=num_sampled)
+
+        negative_index = negative_index_hard + negative_index_sampled        
+
+    positives=[]
+    for c_index in positive_index:
+        candidate={}
+        candidate['index']=c_index
+        candidate['question']=data[c_index]['qa']['question']
+        candidate['program']=masked_program(data[c_index]['qa']['program'], constants)
+        if c_index > index:
+            s_index = c_index-1
+        else:
+            s_index = c_index
+        candidate['question_score']=q_score[s_index][1]
+        candidate['program_score']=p_score[s_index][1]
+        positives.append(candidate)
+    
+    negatives=[]
+    for c_index in negative_index:
+        candidate={}
+        candidate['index']=c_index
+        candidate['question']=data[c_index]['qa']['question']
+        candidate['program']=masked_program(data[c_index]['qa']['program'], constants)
+        if c_index > index:
+            s_index = c_index-1
+        else:
+            s_index = c_index
+        candidate['question_score']=q_score[s_index][1]
+        candidate['program_score']=p_score[s_index][1]
+        negatives.append(candidate)
+    
+    return positives, negatives
+
+
+    
