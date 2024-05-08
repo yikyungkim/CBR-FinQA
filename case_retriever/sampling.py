@@ -249,7 +249,7 @@ def masked_program(program, constants):
 
 def load_dataset(finqa_dataset_path, constants_path, archive_path, 
                  mode, q_score_available, p_score_available, candidates_available, 
-                 pos_pool, neg_pool, neg_ratio):
+                 pos_pool, neg_pool):
 
     data = json.load(open(finqa_dataset_path))
     constants = read_txt(constants_path)
@@ -286,14 +286,14 @@ def load_dataset(finqa_dataset_path, constants_path, archive_path,
         non_gold_cands = pickle.load(open(archive_path + mode + '_' + str(neg_pool) + '_non_gold_candidates', 'rb'))
     else:
         print('starts getting question similar candidates')
-        gold_cands, non_gold_cands = get_question_similar_candidates(data, q_scores, gold_indices, pos_pool, neg_pool, neg_ratio)
+        gold_cands, non_gold_cands = get_question_similar_candidates(data, q_scores, gold_indices, pos_pool, neg_pool)
         save_archive(archive_path, gold_cands, mode + '_' + str(pos_pool) + '_gold_candidates')
         save_archive(archive_path, non_gold_cands, mode + '_' + str(neg_pool) + '_non_gold_candidates')
 
     return data, q_scores, p_scores, gold_indices, constants, gold_cands, non_gold_cands
 
 
-def get_question_similar_candidates(data, q_scores, gold_indices, train_size, neg_pool, neg_ratio):
+def get_question_similar_candidates(data, q_scores, gold_indices, pos_pool, neg_pool):
 
     gold_cands={}
     non_gold_cands={}
@@ -302,10 +302,10 @@ def get_question_similar_candidates(data, q_scores, gold_indices, train_size, ne
         non_gold_cands[i]=[]
         q_score = q_scores[i]
         gold_index = gold_indices[i]
-        k_pos = round(train_size / (neg_ratio+1))
-        if len(gold_index) < k_pos:     # we will take (k_pos * 3) number of candidates
-            k_pos = len(gold_index)
-        if k_pos==0:
+        # k_pos = round(train_size / (neg_ratio+1))
+        # if len(gold_index) < k_pos:     # we will take (k_pos * 3) number of candidates
+        #     k_pos = len(gold_index)
+        if len(gold_index)==0:
             gold_candidates=[]
             non_gold_candidates=[]
         else:
@@ -317,8 +317,8 @@ def get_question_similar_candidates(data, q_scores, gold_indices, train_size, ne
                 else:
                     non_gold_pair.append((c_index, score))
     
-            # sort by question score and get top-(k_pos*3) candidates
-            pos_pool = k_pos * 3
+            # sort by question score and get top-(pool) candidates
+            # pos_pool = k_pos * 3
             gold_candidates_pair = sorted(gold_pair, key=lambda x:x[1], reverse=True)[:pos_pool]
             non_gold_candidates_pair = sorted(non_gold_pair, key=lambda x:x[1], reverse=True)[:neg_pool]
 

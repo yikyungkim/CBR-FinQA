@@ -321,7 +321,7 @@ def convert_qa_example(tokenizer, example, input_ids_q, input_mask_q, seg_ids_q)
 """ Data Loader """
 class myDataLoader:
     def __init__(self, is_training, data, batch_size):
-        if conf.mode == 'train':
+        if is_training:
             self.data_pos = data[0]
             self.data_neg = data[1]
             self.data = self.data_pos + self.data_neg              
@@ -546,9 +546,8 @@ def train():
             'q_score_available': conf.q_score_available,
             'p_score_available': conf.p_score_available,
             'candidates_available': conf.candidates_available,
-            'pos_pool': conf.train_size,
-            'neg_pool': conf.neg_pool,
-            'neg_ratio': conf.neg_ratio
+            'pos_pool': conf.pos_pool,
+            'neg_pool': conf.neg_pool
         }
         data, q_scores, p_scores, gold_indices, constants, gold_cands, non_gold_cands = sampling.load_dataset(**kwargs_load)
         record_time = time.time() - record_start
