@@ -45,8 +45,6 @@ elif conf.pretrained_model == "longformer":
     model_config = LongformerConfig.from_pretrained(conf.model_size)
 
 
-# model_dir_name = datetime.now().strftime("%Y%m%d%H%M%S") + \
-#     "_" + conf.model_save_name
 model_dir_name = conf.model_save_name
 model_dir = os.path.join(conf.output_path, model_dir_name)
 results_path = os.path.join(model_dir, "results")
@@ -60,6 +58,11 @@ const_list = read_txt(conf.const_list_file, log_file)
 const_list = [const.lower().replace('.', '_') for const in const_list]
 reserved_token_size = len(op_list) + len(const_list)
 
+write_log(log_file, "####################INPUT PARAMETERS###################")   
+for attr in conf.__dict__:
+    value = conf.__dict__[attr]
+write_log(log_file, attr + " = " + str(value))
+write_log(log_file, "#######################################################")
 
 """ added for CBR """
 special_token = {'additional_special_tokens': ['[QNP]']}

@@ -4,11 +4,11 @@ class parameters():
 
     # set up your own path here
     root_path = "/shared/s3/lab07/yikyung/cbr/"
-    output_path = "/shared/s3/lab07/yikyung/cbr/generator_concat/inference/"
+    output_path = '/shared/s3/lab07/yikyung/cbr/generator_concat/inference/bienc_9/'
     cache_dir = "/home/s3/yikyungkim/research/cbr/cache/"
+    model_save_name = "qandp_3_train_all_ponly"    # directory name
 
-    model_save_name = "roberta-base-ops-case3-gold"    # directory name
-    program_type = "ops"    # ops, prog
+    program_type = "prog"    # ops, prog
     input_concat = "ponly"  # qandp, ponly
     num_case = 3    # 1, 3
 
@@ -24,10 +24,10 @@ class parameters():
     # test_file = '/shared/s3/lab07/yikyung/cbr/generator_concat/output_int/test_human_cont_10_yk.json'
 
     ### files from case retriever
-    train_case = root_path + "dataset/case_retriever_output/cross_encoder/" + "cross_30/on_bienc_results_2/train_golds.json"
-    valid_case = root_path + "dataset/case_retriever_output/cross_encoder/" + "cross_30/on_bienc_results_2/dev_noise.json"
-    test_case = root_path + "dataset/case_retriever_output/cross_encoder/" + "cross_30/on_bienc_results_2/test_noise.json"
-
+    train_case = '/shared/s3/lab07/yikyung/cbr/dataset/case_retriever_output/cross_encoder/cross_30/on_bienc_results_2/train_golds.json'
+    valid_case = '/shared/s3/lab07/yikyung/cbr/dataset/case_retriever_output/cross_encoder/cross_30/on_bienc_results_2/dev_noise.json'
+    # test_case = '/shared/s3/lab07/yikyung/cbr/dataset/case_retriever_output/cross_encoder/cross_30/on_bienc_results_2_10/test_retrieved_noise3_program.json'
+    test_case = '/shared/s3/lab07/yikyung/cbr/case_retriever/output/inference/bi_bert-base_q+p_mixed_100300-29/training_100/results/predictions.json'
     # test_case = '/shared/s3/lab07/yikyung/cbr/generator_concat/output_int/test_human_case_10_yk.json'
 
     op_list_file = root_path + "dataset/finqa_original/operation_list.txt"
@@ -59,16 +59,13 @@ class parameters():
     # train, test, or private
     # private: for testing private test data
     device = 'cuda'
-    mode = "train"
+    mode = "test"
     resume = False
     # resume_model = '/home/ubuntu/yikyung/generator_concat/output/roberta-large-case3-noise/saved_model/model_5.pt'
     # wandb_id = 'j14sp6ow'
 
-    saved_model_path = "/shared/s3/lab07/yikyung/cbr/generator_concat/train/roberta-base-ops-case1-gold/saved_model/model_90.pt"
-    # saved_model_path = "/home/ubuntu/yikyung/generator_concat/output/roberta-base-case1-noise_20230609152628/saved_model/model_98.pt"      #1 case base
-    # saved_model_path = "/shared/s3/lab07/yikyung/cbr/generator_concat/train/roberta-base-case3-noise_20230609071454/saved_model/model_99.pt"      #3 cases base
+    saved_model_path = "/shared/s3/lab07/yikyung/cbr/generator_concat/train/roberta-base-case3-noise_20230609071454/saved_model/model_99.pt"
     # threshold = 4.6
-    # saved_model_path = '/data/yikyung/generator_concat/output/roberta-large-case3-noise/saved_model/model_76.pt'        # 3 case large
     
     build_summary = False
 

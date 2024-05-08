@@ -855,7 +855,9 @@ def evaluate_result(json_in, json_ori, case_file, all_res_file, error_file, prog
         pred = each_data["pred_prog"]
         gold = each_data["ref_prog"]
 
-        case = tmp2['model_input']
+        # case = tmp2['model_input']
+        case = tmp2['case_retrieved'][:conf.num_case]
+        # case = tmp2['reranked'][:conf.num_case]
         case_input = []
         for c_input in case:
             qnp=[c_input['question'], c_input['program']]
