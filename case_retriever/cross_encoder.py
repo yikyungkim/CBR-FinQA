@@ -171,8 +171,12 @@ def operators_in_program(original_program):
     return operators
 
 
-def wrap_pair(tokenizer, question, candidate, label, max_seq_len, cls_token, sep_token):
+def wrap_pair(tokenizer, question, candidate, label):
     
+    max_seq_len = conf.max_seq_len
+    cls_token = tokenizer.cls_token
+    sep_token = tokenizer.sep_token
+
     question_token = tokenize(tokenizer, question)
     candidate_token = tokenize(tokenizer, candidate)
 
@@ -207,7 +211,12 @@ def wrap_pair(tokenizer, question, candidate, label, max_seq_len, cls_token, sep
     return features
 
 
-def convert_qa_example(example, tokenizer, max_seq_len, cls_token, sep_token, input_concat, program_type):
+def convert_qa_example(example, tokenizer):
+    
+    max_seq_len = conf.max_seq_len
+    input_concat = conf.input_concat
+    program_type = conf.program_type
+    
     pos_features=[]
     neg_features=[]
     question=example.question
@@ -224,7 +233,7 @@ def convert_qa_example(example, tokenizer, max_seq_len, cls_token, sep_token, in
             gold_cand = gold_ques + " " + '[QNP]' + " " + gold_prog
         elif input_concat == "ponly":
             gold_cand = gold_prog
-        features = wrap_pair(tokenizer, question, gold_cand, 1, max_seq_len, cls_token, sep_token)
+        features = wrap_pair(tokenizer, question, gold_cand, 1)
         features['query_index']=index
         features['cand_index']=positive['index']
         features['cand_question']=positive['question']
@@ -242,7 +251,7 @@ def convert_qa_example(example, tokenizer, max_seq_len, cls_token, sep_token, in
             neg_cand = neg_ques + " " + '[QNP]' + " " + neg_prog
         elif input_concat == "ponly":
             neg_cand = neg_prog
-        features = wrap_pair(tokenizer, question, neg_cand, 0, max_seq_len, cls_token, sep_token)
+        features = wrap_pair(tokenizer, question, neg_cand, 0)
         features['query_index']=index
         features['cand_index']=negative['index']
         features['cand_question']=negative['question']
@@ -252,8 +261,10 @@ def convert_qa_example(example, tokenizer, max_seq_len, cls_token, sep_token, in
     return pos_features, neg_features
 
 
-def get_negatives_by_score(program_type, gold_program, negative_candidates):
+def get_negatives_by_score(gold_program, negative_candidates):
     
+    program_type = conf.program_type
+
     gold_program = program_tokenization(gold_program)
     if program_type == 'ops':
         i=0
@@ -313,7 +324,13 @@ def get_negatives_by_score(program_type, gold_program, negative_candidates):
     return negative_candidates_scores
 
 
-def get_positives_and_negatives(data, neg_ratio, hard_ratio, fix_ratio, mode, data_type, program_type, negative_type):
+def get_positives_and_negatives(data, mode):
+
+    neg_ratio = conf.neg_ratio
+    hard_ratio = conf.hard_ratio
+    fix_ratio = conf.fix_ratio
+    data_type = conf.data_type
+    negative_type = conf.negative_type
 
     if data_type == 'base':
         gold_program = data['program']
@@ -329,16 +346,8 @@ def get_positives_and_negatives(data, neg_ratio, hard_ratio, fix_ratio, mode, da
 
         k_pos = round(100/(neg_ratio+1))
         if num_golds < k_pos:
-#             if num_golds < 5:
-#                 k_pos = num_golds * 2
-#             else:
             k_pos = num_golds
         k_neg = k_pos * neg_ratio
-        
-        # print('num_golds: ', num_golds)
-        # print('num_negs: ', len(negative_candidates))
-        # print('k_pos: ', k_pos)
-        # print('k_neg: ', k_neg)
 
         if mode == "train":
             # if number of negatives are less than k_neg, use all negatives
@@ -355,7 +364,7 @@ def get_positives_and_negatives(data, neg_ratio, hard_ratio, fix_ratio, mode, da
                 negatives = negative_candidates[:k_neg]
 
             elif negative_type == 'hard':
-                negative_candidates_scores = get_negatives_by_score(program_type, gold_program, negative_candidates)
+                negative_candidates_scores = get_negatives_by_score(gold_program, negative_candidates)
                 # print('num_negs_scores: ', len(negative_candidates_scores))
                 num_hard = round(k_neg*hard_ratio)
                 num_easy = k_neg - num_hard
@@ -369,7 +378,7 @@ def get_positives_and_negatives(data, neg_ratio, hard_ratio, fix_ratio, mode, da
                 negatives = hard_negatives + easy_negatives     
             
             elif negative_type == 'adjusted_hard':
-                negative_candidates_scores = get_negatives_by_score(program_type, gold_program, negative_candidates)
+                negative_candidates_scores = get_negatives_by_score(gold_program, negative_candidates)
                 # print('num_negs_scores: ', len(negative_candidates_scores))
                 num_hard = round(k_neg*hard_ratio)
                 num_easy = k_neg - num_hard
@@ -402,11 +411,11 @@ def get_positives_and_negatives(data, neg_ratio, hard_ratio, fix_ratio, mode, da
 
 
 
-def read_example(data, neg_ratio, hard_ratio, fix_ratio, mode, data_type, program_type, negative_type):
+def read_example(data, mode):
     org_index=data['original_index']
     question=data['question']
     program=data['program']
-    positives, negatives = get_positives_and_negatives(data, neg_ratio, hard_ratio, fix_ratio, mode, data_type, program_type, negative_type)
+    positives, negatives = get_positives_and_negatives(data, mode)
     return QuestionExample(
         org_index=org_index, 
         question=question, 
@@ -415,28 +424,21 @@ def read_example(data, neg_ratio, hard_ratio, fix_ratio, mode, data_type, progra
         negatives=negatives)
 
 
-def read_examples(input_path, log_path, neg_ratio, hard_ratio, fix_ratio, mode, data_type, program_type, negative_type):
+def read_examples(input_path, log_path,  mode):
     write_log(log_path, "Readings "+input_path)
     with open(input_path) as file:
         input_data = json.load(file)
     examples=[]
     for data in input_data:
-        examples.append(read_example(data, neg_ratio, hard_ratio, fix_ratio, mode, data_type, program_type, negative_type))
+        examples.append(read_example(data, mode))
     return input_data, examples
 
 
-def convert_to_features(examples, tokenizer, max_seq_len, input_concat, program_type):
+def convert_to_features(examples, tokenizer):
     pos_features=[]
     neg_features=[]
     for (index, example) in enumerate(examples):
-        pos, neg = example.convert_example(
-            tokenizer=tokenizer,
-            max_seq_len=max_seq_len,
-            cls_token=tokenizer.cls_token,
-            sep_token=tokenizer.sep_token,
-            input_concat=input_concat,
-            program_type=program_type
-        )
+        pos, neg = example.convert_example(tokenizer=tokenizer)
         pos_features.extend(pos)
         neg_features.extend(neg)
     return pos_features, neg_features
@@ -998,16 +1000,12 @@ if __name__ == '__main__':
         write_log(log_path, "#######################################################")
 
         """Import dataset and convert info features"""
-        train_data, train_examples = read_examples(conf.train_file, log_path, 
-                                                   conf.neg_ratio, conf.hard_ratio, conf.fix_ratio, 
-                                                   "train", conf.data_type, conf.program_type, conf.negative_type)
-        kwargs={'examples': train_examples, 'tokenizer': tokenizer, 'max_seq_len': conf.max_seq_len, 'input_concat': conf.input_concat, 'program_type': conf.program_type}
+        train_data, train_examples = read_examples(conf.train_file, log_path, "train")
+        kwargs={'examples': train_examples, 'tokenizer': tokenizer}
         write_log(log_path, "Starts converting training data to features")
         train_features = convert_to_features(**kwargs)
         
-        valid_data, valid_examples = read_examples(conf.valid_file, log_path, 
-                                                   conf.neg_ratio, conf.hard_ratio, conf.fix_ratio, 
-                                                   "valid", conf.data_type, conf.program_type, conf.negative_type)
+        valid_data, valid_examples = read_examples(conf.valid_file, log_path, "valid")
         kwargs['examples'] = valid_examples
         write_log(log_path, "Starts converting validation data to features")
         valid_features = convert_to_features(**kwargs)
@@ -1034,10 +1032,8 @@ if __name__ == '__main__':
         write_log(log_path, "#######################################################")
 
         """Import dataset and convert info features"""
-        inf_data, inf_examples = read_examples(conf.inference_file, log_path, 
-                                               conf.neg_ratio, conf.hard_ratio, conf.fix_ratio, 
-                                               "test", conf.data_type, conf.program_type, conf.negative_type)
-        kwargs={'examples': inf_examples, 'tokenizer': tokenizer, 'max_seq_len': conf.max_seq_len, 'input_concat': conf.input_concat, 'program_type': conf.program_type}
+        inf_data, inf_examples = read_examples(conf.inference_file, log_path, "test")
+        kwargs={'examples': inf_examples, 'tokenizer': tokenizer}
         write_log(log_path, "Starts converting data to features")
         inf_features = convert_to_features(**kwargs)
         write_log(log_path, "Inference starts...")
