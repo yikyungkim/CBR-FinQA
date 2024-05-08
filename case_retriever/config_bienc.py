@@ -60,6 +60,7 @@ class parameters():
     """For training set"""              
     train_size = 100          # size of training set
     neg_ratio = 2             # ratio of negative examples to positive examples
+    pos_pool = 100             # number of gold candidates (postive case pool)  
     neg_pool = 300            # number of non-gold candidates (negative case pool)  
     sampling = 'mixed'        # how to get samples. random, hard, mixed
 
