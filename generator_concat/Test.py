@@ -44,6 +44,10 @@ elif conf.pretrained_model == "longformer":
     tokenizer = LongformerTokenizer.from_pretrained(conf.model_size)
     model_config = LongformerConfig.from_pretrained(conf.model_size)
 
+""" added for CBR """
+special_token = {'additional_special_tokens': ['[QNP]']}
+num_added_toks = tokenizer.add_special_tokens(special_token)
+
 
 model_dir_name = conf.model_save_name
 model_dir = os.path.join(conf.output_path, model_dir_name)
@@ -58,20 +62,18 @@ const_list = read_txt(conf.const_list_file, log_file)
 const_list = [const.lower().replace('.', '_') for const in const_list]
 reserved_token_size = len(op_list) + len(const_list)
 
-write_log(log_file, "####################INPUT PARAMETERS###################")   
-for attr in conf.__dict__:
-    value = conf.__dict__[attr]
-write_log(log_file, attr + " = " + str(value))
-write_log(log_file, "#######################################################")
+test_data = load_data(conf.test_file, log_file)
+test_case = load_data(conf.test_case, log_file)
+test_examples, op_list, const_list = \
+    read_examples(input_data=test_data, case_data=test_case, tokenizer=tokenizer,
+                op_list=op_list, const_list=const_list, log_file=log_file, 
+                num_case=conf.num_case, input_concat=conf.input_concat, program_type=conf.program_type)
 
-""" added for CBR """
-special_token = {'additional_special_tokens': ['[QNP]']}
-num_added_toks = tokenizer.add_special_tokens(special_token)
 
-test_data, test_examples, op_list, const_list = \
-    read_examples(input_path=conf.test_file, case_path=conf.test_case, tokenizer=tokenizer,
-                  op_list=op_list, const_list=const_list, log_file=log_file, 
-                  num_case=conf.num_case, input_concat=conf.input_concat, program_type=conf.program_type)
+# test_data, test_examples, op_list, const_list = \
+#     read_examples(input_path=conf.test_file, case_path=conf.test_case, tokenizer=tokenizer,
+#                   op_list=op_list, const_list=const_list, log_file=log_file, 
+#                   num_case=conf.num_case, input_concat=conf.input_concat, program_type=conf.program_type)
 
 # test_data, test_examples, op_list, const_list = \
 #     read_examples_test(input_path=conf.test_file, case_path=conf.test_case, tokenizer=tokenizer,
@@ -179,5 +181,11 @@ def generate_test():
 
 
 if __name__ == '__main__':
+
+    write_log(log_file, "####################INPUT PARAMETERS###################")
+    for attr in conf.__dict__:
+        value = conf.__dict__[attr]
+        write_log(log_file, attr + " = " + str(value))
+    write_log(log_file, "#######################################################")
 
     generate_test()

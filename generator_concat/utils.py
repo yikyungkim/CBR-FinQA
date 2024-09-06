@@ -20,6 +20,8 @@ from transformers import BertTokenizer, BertModel, BertConfig
 import finqa_utils as finqa_utils
 from sympy import simplify
 
+import sampling as sampling
+
 # Progress bar
 
 TOTAL_BAR_LENGTH = 100.
@@ -174,18 +176,28 @@ def read_txt(input_path, log_file):
     return items
 
 
-def read_examples(input_path, case_path, tokenizer, op_list, const_list, log_file, num_case, input_concat, program_type):
-
-    """Read a json file into a list of examples."""
-
+def load_data(input_path, log_file):
     write_log(log_file, "Reading " + input_path)
     with open(input_path) as input_file:
         input_data = json.load(input_file)
+    return input_data
 
-    """ added for CBR """   
-    write_log(log_file, "Reading " + case_path)
-    with open(case_path) as case_file:
-        case_data = json.load(case_file)
+
+
+
+
+def read_examples(input_data, case_data, tokenizer, op_list, const_list, log_file, num_case, input_concat, program_type):
+
+    """Read a json file into a list of examples."""
+
+    # write_log(log_file, "Reading " + input_path)
+    # with open(input_path) as input_file:
+    #     input_data = json.load(input_file)
+
+    # """ added for CBR """   
+    # write_log(log_file, "Reading " + case_path)
+    # with open(case_path) as case_file:
+    #     case_data = json.load(case_file)
 
     examples = []
     for entry, case_entry in zip(input_data, case_data):        
@@ -196,7 +208,7 @@ def read_examples(input_path, case_path, tokenizer, op_list, const_list, log_fil
         #         const_list.append(tok)
         #     elif '(' in tok and not (tok in op_list):
         #         op_list.append(tok)
-    return input_data, examples, op_list, const_list
+    return examples, op_list, const_list
 
 
 def read_examples_test(input_path, case_path, tokenizer, op_list, const_list, log_file, threshold):

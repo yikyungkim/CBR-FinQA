@@ -3,35 +3,41 @@ class parameters():
     prog_name = "generator"
 
     # set up your own path here
-    root_path = "/shared/s3/lab07/yikyung/cbr/"
-    output_path = '/shared/s3/lab07/yikyung/cbr/generator_concat/inference/bienc_9/'
-    cache_dir = "/home/s3/yikyungkim/research/cbr/cache/"
-    model_save_name = "qandp_3_train_all_ponly"    # directory name
+    # root_path = "/shared/s3/lab07/yikyung/cbr/"
+    output_path = '/data2/yikyungkim/generator_concat/inference/'
+    cache_dir = "/data2/yikyungkim/cache/"
+    model_save_name = "roberta-base-case3_ponly-noise_85_sampling100100"    # directory name
 
     program_type = "prog"    # ops, prog
     input_concat = "ponly"  # qandp, ponly
     num_case = 3    # 1, 3
+
 
     # train_file = root_path + "dataset/train.json"
     # valid_file = root_path + "dataset/dev.json"
     # test_file = root_path + "dataset/test.json"
 
     ### files from the retriever results
-    train_file = root_path + "dataset/finqa_retriever_output/train_retrieve.json"
-    valid_file = root_path + "dataset/finqa_retriever_output/dev_retrieve.json"
-    test_file = root_path + "dataset/finqa_retriever_output/test_retrieve.json"
+    # train_file = "/data2/yikyungkim/dataset/finqa_retriever_output/train_retrieved_random10.json"
+    # valid_file = "/data2/yikyungkim/dataset/finqa_retriever_output/dev_retrieved_random10.json"
+    # test_file = "/data2/yikyungkim/dataset/finqa_retriever_output/test_retrieved_random10.json"
+    train_file = "/data2/yikyungkim/dataset/finqa_retriever_output/train_retrieve.json"
+    valid_file = "/data2/yikyungkim/dataset/finqa_retriever_output/dev_retrieve.json"
+    test_file = "/data2/yikyungkim/dataset/finqa_retriever_output/test_retrieve.json"
 
     # test_file = '/shared/s3/lab07/yikyung/cbr/generator_concat/output_int/test_human_cont_10_yk.json'
 
     ### files from case retriever
-    train_case = '/shared/s3/lab07/yikyung/cbr/dataset/case_retriever_output/cross_encoder/cross_30/on_bienc_results_2/train_golds.json'
-    valid_case = '/shared/s3/lab07/yikyung/cbr/dataset/case_retriever_output/cross_encoder/cross_30/on_bienc_results_2/dev_noise.json'
-    # test_case = '/shared/s3/lab07/yikyung/cbr/dataset/case_retriever_output/cross_encoder/cross_30/on_bienc_results_2_10/test_retrieved_noise3_program.json'
-    test_case = '/shared/s3/lab07/yikyung/cbr/case_retriever/output/inference/bi_bert-base_q+p_mixed_100300-29/training_100/results/predictions.json'
-    # test_case = '/shared/s3/lab07/yikyung/cbr/generator_concat/output_int/test_human_case_10_yk.json'
+    # train_case = "/data2/yikyungkim/dataset/finqa_original/train_random10.json"
+    # valid_case = '/data2/yikyungkim/case_retriever/inference/bi_bert-base_q+p_mixed_100300_random10/dev/results/predictions.json'
+    # test_case = '/data2/yikyungkim/case_retriever/inference/bi_bert-base_q+p_mixed_100300_random10/test/results/predictions.json'          
+    test_case = '/data2/yikyungkim/case_retriever/inference/bi_bert-base_q+p_mixed_100300/training_100/results/predictions.json'
 
-    op_list_file = root_path + "dataset/finqa_original/operation_list.txt"
-    const_list_file = root_path + "dataset/finqa_original/constant_list.txt"
+    op_list_file = "/data2/yikyungkim/dataset/finqa_original/operation_list.txt"
+    const_list_file = "/data2/yikyungkim/dataset/finqa_original/constant_list.txt"
+
+    archive_path = "/data2/yikyungkim/generator_concat/archives/"
+
 
     # # model choice: bert, roberta, albert
     # pretrained_model = "bert"
@@ -39,7 +45,6 @@ class parameters():
 
     # model choice: bert, roberta, albert
     pretrained_model = "roberta"
-    # model_size = "roberta-large"
     model_size = "roberta-base"
 
     # # finbert
@@ -61,10 +66,10 @@ class parameters():
     device = 'cuda'
     mode = "test"
     resume = False
-    # resume_model = '/home/ubuntu/yikyung/generator_concat/output/roberta-large-case3-noise/saved_model/model_5.pt'
-    # wandb_id = 'j14sp6ow'
+    # resume_model = '/data2/yikyungkim/generator_concat/train/roberta-large-case3_ponly-noise_75_sampling100100/saved_model/model_63.pt'
+    # wandb_id = '8i4cuy36'
 
-    saved_model_path = "/shared/s3/lab07/yikyung/cbr/generator_concat/train/roberta-base-case3-noise_20230609071454/saved_model/model_99.pt"
+    saved_model_path = "/data2/yikyungkim/generator_concat/train/roberta-base-case3_ponly-noise_85_sampling100100/saved_model/model_92.pt"
     # threshold = 4.6
     
     build_summary = False
@@ -89,3 +94,18 @@ class parameters():
 
     max_step_ind = 11
 
+
+    """For training set"""              
+    use_retrieved_cases = False            # sampling from all candiates or not (True: get samples from all 6250 candidates, False: get samples from top-100 question similar candidates)
+    top3_precision_val = 0.75
+
+    pos_pool = 20             # number of gold candidates (postive case pool)  
+    neg_pool = 20            # number of non-gold candidates (negative case pool)  
+
+    q_score_available = False        # if question similarity score is already computed or not (similarity between training question <-> training question)
+    p_score_available = False        # if program score is already computed or not 
+    candidates_available = False     # if top-(pool) question similar candidates are saved or not
+
+
+    """For validation & test set"""              
+    # use retrieved cases from valid_case, test_case

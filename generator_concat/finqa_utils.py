@@ -351,8 +351,6 @@ def read_mathqa_entry(entry, case_entry, tokenizer, num_case, input_concat, prog
     #     for case in case_entry['model_input'][:num_case]:
     if case_entry['case_retrieved']:
         for case in case_entry['case_retrieved'][:num_case]:
-    # if case_entry['reranked']:
-    #     for case in case_entry['reranked'][:num_case]:
             case_question = case['question']
             if program_type == "prog":
                 case_program = case['program'][:-5]

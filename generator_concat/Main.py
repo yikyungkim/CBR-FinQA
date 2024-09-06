@@ -17,9 +17,13 @@ import torch.optim as optim
 
 from Model_new import Bert_model
 
+import sampling as sampling
+
 import wandb
 """ added for CBR """
 # from convert import *
+
+os.environ["CUDA_VISIBLE_DEVICES"]="0"
 
 if conf.pretrained_model == "bert":
     print("Using bert")
@@ -48,11 +52,12 @@ elif conf.pretrained_model == "longformer":
     tokenizer = LongformerTokenizer.from_pretrained(conf.model_size)
     model_config = LongformerConfig.from_pretrained(conf.model_size)
 
+""" added for CBR """
+special_token = {'additional_special_tokens': ['[QNP]']}
+num_added_toks = tokenizer.add_special_tokens(special_token)
 
 # create output paths
 if conf.mode == "train":
-    # model_dir_name = conf.model_save_name + "_" + \
-    #     datetime.now().strftime("%Y%m%d%H%M%S")         # for restart
     model_dir_name = conf.model_save_name
     model_dir = os.path.join(conf.output_path, model_dir_name)
     results_path = os.path.join(model_dir, "results")
@@ -62,8 +67,6 @@ if conf.mode == "train":
     log_file = os.path.join(results_path, 'log.txt')
 
 else:
-    # saved_model_path = os.path.join(conf.output_path, conf.saved_model_path)
-    # model_dir_name = datetime.now().strftime("%Y%m%d%H%M%S")
     model_dir_name = conf.model_save_name
     model_dir = os.path.join(conf.output_path, model_dir_name)
     results_path = os.path.join(model_dir, "results")
@@ -77,38 +80,32 @@ const_list = read_txt(conf.const_list_file, log_file)
 const_list = [const.lower().replace('.', '_') for const in const_list]
 reserved_token_size = len(op_list) + len(const_list)
 
+# train_data, train_examples, op_list, const_list = \
+#     read_examples(input_path=conf.train_file, case_path=conf.train_case, tokenizer=tokenizer,
+#                   op_list=op_list, const_list=const_list, log_file=log_file, 
+#                   num_case=conf.num_case, input_concat=conf.input_concat, program_type=conf.program_type)
 
-""" added for CBR """
-special_token = {'additional_special_tokens': ['[QNP]']}
-num_added_toks = tokenizer.add_special_tokens(special_token)
-
-
-train_data, train_examples, op_list, const_list = \
-    read_examples(input_path=conf.train_file, case_path=conf.train_case, tokenizer=tokenizer,
-                  op_list=op_list, const_list=const_list, log_file=log_file, 
-                  num_case=conf.num_case, input_concat=conf.input_concat, program_type=conf.program_type)
-
-valid_data, valid_examples, op_list, const_list = \
-    read_examples(input_path=conf.valid_file, case_path=conf.valid_case, tokenizer=tokenizer,
-                  op_list=op_list, const_list=const_list, log_file=log_file, 
-                  num_case=conf.num_case, input_concat=conf.input_concat, program_type=conf.program_type)
+# valid_data, valid_examples, op_list, const_list = \
+#     read_examples(input_path=conf.valid_file, case_path=conf.valid_case, tokenizer=tokenizer,
+#                   op_list=op_list, const_list=const_list, log_file=log_file, 
+#                   num_case=conf.num_case, input_concat=conf.input_concat, program_type=conf.program_type)
 
 
-kwargs = {"examples": train_examples,
-          "tokenizer": tokenizer,
-          "max_seq_length": conf.max_seq_length,
-          "max_program_length": conf.max_program_length,
-          "is_training": True,
-          "op_list": op_list,
-          "op_list_size": len(op_list),
-          "const_list": const_list,
-          "const_list_size": len(const_list),
-          "verbose": True}
+# kwargs = {"examples": train_examples,
+#           "tokenizer": tokenizer,
+#           "max_seq_length": conf.max_seq_length,
+#           "max_program_length": conf.max_program_length,
+#           "is_training": True,
+#           "op_list": op_list,
+#           "op_list_size": len(op_list),
+#           "const_list": const_list,
+#           "const_list_size": len(const_list),
+#           "verbose": True}
 
-train_features = convert_examples_to_features(**kwargs)
-kwargs["examples"] = valid_examples
-kwargs["is_training"] = False
-valid_features = convert_examples_to_features(**kwargs)
+# train_features = convert_examples_to_features(**kwargs)
+# kwargs["examples"] = valid_examples
+# kwargs["is_training"] = False
+# valid_features = convert_examples_to_features(**kwargs)
 
 
 def train():
@@ -119,6 +116,78 @@ def train():
         write_log(log_file, attr + " = " + str(value))
     write_log(log_file, "#######################################################")
 
+    """ Load necessary data """
+    op_list = read_txt(conf.op_list_file, log_file)
+    op_list = [op + '(' for op in op_list]
+    op_list = ['EOF', 'UNK', 'GO', ')'] + op_list
+    const_list = read_txt(conf.const_list_file, log_file)
+    const_list = [const.lower().replace('.', '_') for const in const_list]
+    reserved_token_size = len(op_list) + len(const_list)
+
+    """ Load training, validation data """
+    train_data = load_data(conf.train_file, log_file)
+    if conf.use_retrieved_cases:
+        train_case = load_data(conf.train_case, log_file)
+    else:
+        kwargs_load={
+            'finqa_dataset_path': conf.train_case,
+            'constants_path': conf.const_list_file,
+            'archive_path': conf.archive_path,
+            'mode': 'train',
+            'q_score_available': conf.q_score_available,
+            'p_score_available': conf.p_score_available,
+            'candidates_available': conf.candidates_available,
+            'pos_pool': conf.pos_pool,
+            'neg_pool': conf.neg_pool
+        }
+        input_data, q_scores, p_scores, gold_indices, constants, gold_cands, non_gold_cands = sampling.load_dataset(**kwargs_load)
+
+        kwargs_sample={
+            'seed': 0,
+            'input_data': input_data,
+            'p_scores': p_scores,
+            'gold_cands': gold_cands,
+            'non_gold_cands': non_gold_cands,
+            'num_case': conf.num_case,
+            'top3_precision': conf.top3_precision_val
+        }
+        train_case = sampling.get_random_cases(**kwargs_sample)
+
+    train_examples, op_list, const_list = \
+        read_examples(input_data=train_data, case_data=train_case, tokenizer=tokenizer,
+                    op_list=op_list, const_list=const_list, log_file=log_file, 
+                    num_case=conf.num_case, input_concat=conf.input_concat, program_type=conf.program_type)
+
+    valid_data = load_data(conf.valid_file, log_file)
+    valid_case = load_data(conf.valid_case, log_file)
+    valid_examples, op_list, const_list = \
+        read_examples(input_data=valid_data, case_data=valid_case, tokenizer=tokenizer,
+                    op_list=op_list, const_list=const_list, log_file=log_file, 
+                    num_case=conf.num_case, input_concat=conf.input_concat, program_type=conf.program_type)
+
+
+    """ Convert to model input features """
+    kwargs = {"examples": train_examples,
+            "tokenizer": tokenizer,
+            "max_seq_length": conf.max_seq_length,
+            "max_program_length": conf.max_program_length,
+            "is_training": True,
+            "op_list": op_list,
+            "op_list_size": len(op_list),
+            "const_list": const_list,
+            "const_list_size": len(const_list),
+            "verbose": True}
+
+    train_features = convert_examples_to_features(**kwargs)
+    kwargs["examples"] = valid_examples
+    kwargs["is_training"] = False
+    valid_features = convert_examples_to_features(**kwargs)
+
+    train_iterator = DataLoader(
+        is_training=True, data=train_features, batch_size=conf.batch_size, reserved_token_size=reserved_token_size, shuffle=True)
+
+
+    """ Set model """
     model = Bert_model(num_decoder_layers=conf.num_decoder_layers,
                        hidden_size=model_config.hidden_size,
                        dropout_rate=conf.dropout_rate,
@@ -135,26 +204,52 @@ def train():
     model.train()
     # torch.autograd.set_detect_anomaly(True)
 
-    train_iterator = DataLoader(
-        is_training=True, data=train_features, batch_size=conf.batch_size, reserved_token_size=reserved_token_size, shuffle=True)
-
     k = 0                                   
     record_k = 0
     record_loss_k = 0
     loss, start_time = 0.0, time.time()
     record_loss = 0.0
 
-
     ep_global = 0   
     if conf.resume:
         checkpoint = torch.load(conf.resume_model)
         model.load_state_dict(checkpoint)
-        ep_global = 0
+        ep_global = 64
 
-    for ep in range(ep_global, conf.epoch):                     
+    for ep in range(ep_global, conf.epoch): 
+
+        # sampling every epoch
+        if (conf.resume==False and ep>0) or (conf.resume==True and ep>ep_global):
+            if not conf.use_retrieved_cases:
+                kwargs_sample={
+                    'seed': ep,
+                    'input_data': input_data,
+                    'p_scores': p_scores,
+                    'gold_cands': gold_cands,
+                    'non_gold_cands': non_gold_cands,
+                    'num_case': conf.num_case,
+                    'top3_precision': conf.top3_precision_val
+                }
+                train_case = sampling.get_random_cases(**kwargs_sample)
+                train_examples, op_list, const_list = \
+                    read_examples(input_data=train_data, case_data=train_case, tokenizer=tokenizer,
+                                op_list=op_list, const_list=const_list, log_file=log_file, 
+                                num_case=conf.num_case, input_concat=conf.input_concat, program_type=conf.program_type)
+                kwargs = {"examples": train_examples,
+                        "tokenizer": tokenizer,
+                        "max_seq_length": conf.max_seq_length,
+                        "max_program_length": conf.max_program_length,
+                        "is_training": True,
+                        "op_list": op_list,
+                        "op_list_size": len(op_list),
+                        "const_list": const_list,
+                        "const_list_size": len(const_list),
+                        "verbose": True}
+
+                train_features = convert_examples_to_features(**kwargs)
+                train_iterator = DataLoader(is_training=True, data=train_features, batch_size=conf.batch_size, reserved_token_size=reserved_token_size, shuffle=True)
         train_iterator.reset()
         for x in train_iterator:
-
             input_ids = torch.tensor(x['input_ids']).to(conf.device)
             input_mask = torch.tensor(x['input_mask']).to(conf.device)
             segment_ids = torch.tensor(x['segment_ids']).to(conf.device)
@@ -293,8 +388,10 @@ def evaluate(data_ori, data, model, ksave_dir, mode='valid'):
 
 
 if __name__ == '__main__':
-    wandb.init(project="generator", notes=conf.model_save_name)
-            #    ,resume="must", id="2ow9tdts")  
+    if conf.resume:
+        wandb.init(project="generator", notes=conf.model_save_name, resume="must", id=conf.wandb_id)  
+    else:
+        wandb.init(project="generator", notes=conf.model_save_name)
 
     if conf.mode == "train":
         train()
