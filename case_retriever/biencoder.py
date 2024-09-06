@@ -225,7 +225,10 @@ def convert_to_features(examples, tokenizer):
     for i, example in enumerate(examples):
         input_ids_q = encoding_query['input_ids'][i]
         input_mask_q = encoding_query['attention_mask'][i]
-        seg_ids_q = encoding_query['token_type_ids'][i]
+        if conf.model=="bert":
+            seg_ids_q = encoding_query['token_type_ids'][i]
+        else:
+            seg_ids_q =[0]*conf.max_seq_len
         pos, neg = convert_qa_example(tokenizer, example, input_ids_q, input_mask_q, seg_ids_q)
         pos_features.extend(pos)
         neg_features.extend(neg)
@@ -266,7 +269,10 @@ def convert_qa_example(tokenizer, example, input_ids_q, input_mask_q, seg_ids_q)
             features['seg_ids_q']=seg_ids_q
             features['input_ids_c']=encoding_pos['input_ids'][i]
             features['input_mask_c']=encoding_pos['attention_mask'][i]
-            features['seg_ids_c']=encoding_pos['token_type_ids'][i]
+            if conf.model=="bert":  
+                features['seg_ids_c']=encoding_pos['token_type_ids'][i]
+            else:
+                features['seg_ids_c']=[0]*conf.max_seq_len
             features['label']=1
             features['query_index']=index
             features['cand_index']=candidate['index']
@@ -304,7 +310,10 @@ def convert_qa_example(tokenizer, example, input_ids_q, input_mask_q, seg_ids_q)
             features['seg_ids_q']=seg_ids_q
             features['input_ids_c']=encoding_neg['input_ids'][i]
             features['input_mask_c']=encoding_neg['attention_mask'][i]
-            features['seg_ids_c']=encoding_neg['token_type_ids'][i]
+            if conf.model=="bert":  
+                features['seg_ids_c']=encoding_neg['token_type_ids'][i]
+            else:
+                features['seg_ids_c']=[0]*conf.max_seq_len
             features['label']=0
             features['query_index']=index
             features['cand_index']=candidate['index']

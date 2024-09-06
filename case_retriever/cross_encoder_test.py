@@ -46,7 +46,7 @@ def load_dataset_test(finqa_train, finqa_test, constants_path, archive_path,
         train_embedding = sampling.get_embedding(train_questions)
         test_embedding = sampling.get_embedding(test_questions)
         q_scores = sampling.question_score_test(train_size, test_size, train_embedding, test_embedding)
-        sampling.save_archive(archive_path, q_scores, mode + '_scores_question')
+        # sampling.save_archive(archive_path, q_scores, mode + '_scores_question')
 
     # compute program score
     if p_score_available:
@@ -60,8 +60,8 @@ def load_dataset_test(finqa_train, finqa_test, constants_path, archive_path,
         train_programs = [data['qa']['program'] for data in train_data]
         test_programs = [data['qa']['program'] for data in test_data]
         p_scores, gold_indices = sampling.program_score_test(train_programs, test_programs, constants, ops_weight, threshold)
-        sampling.save_archive(archive_path, p_scores, mode + '_scores_program')
-        sampling.save_archive(archive_path, gold_indices, mode + '_gold_indices')
+        # sampling.save_archive(archive_path, p_scores, mode + '_scores_program')
+        # sampling.save_archive(archive_path, gold_indices, mode + '_gold_indices')
 
     print('get question similar candidates')
     if candidates_available:
@@ -72,10 +72,44 @@ def load_dataset_test(finqa_train, finqa_test, constants_path, archive_path,
             q_score = q_scores[i]
             candidates_pair = sorted(q_score, key=lambda x:x[1], reverse=True)[:num_test]            
             candidates[i]=[index for (index, score) in candidates_pair]
-        sampling.save_archive(archive_path, candidates, mode + '_' + str(num_test) + '_candidates')
+        # sampling.save_archive(archive_path, candidates, mode + '_' + str(num_test) + '_candidates')
 
     return train_data, test_data, q_scores, p_scores, gold_indices, constants, candidates
 
+
+def get_examples_test_biencoder(bienc_result, constants_path, bienc_num):
+
+    test_data = json.load(open(bienc_result))
+    constants = sampling.read_txt(constants_path)
+    ops_weight = 0.8
+    threshold = 0.9
+
+    examples=[]
+    golds={}
+    for i, data in enumerate(test_data):
+        org_index = i
+        question = data['qa']['question']
+        program = sampling.masked_program(data['qa']['program'], constants)
+        candidates = data['case_retrieved'][:bienc_num]
+
+        example = sampling.QuestionExample(
+            org_index = org_index,
+            question = question,
+            program = program,
+            positives = candidates,
+            negatives = [])
+        examples.append(example)
+
+        golds[i]=[]
+        for candidate in candidates:
+            cand_program = candidate['program']
+            cand_index = candidate['index']
+            score = sampling.distance_score(program, cand_program, constants, ops_weight)
+            if score >= threshold:
+                golds[i].append(cand_index)
+
+    return test_data, examples, golds
+    
 
 def get_examples_test(train_data, test_data, q_scores, p_scores, constants, candidates):
 
@@ -265,17 +299,17 @@ def convert_qa_example_test(example, tokenizer):
     if example.positives:
         pos_candidates=[]
         for candidate in example.positives:
-            question = candidate['question']          
+            cand_question = candidate['question']          
             if program_type == "prog":
-                program = candidate['program'][:-5]                              # 모델: program, 데이터: new_test
+                cand_program = candidate['program'][:-5]                              # 모델: program, 데이터: new_test
             elif program_type == "ops":
                 # gold_prog = mask_argument_in_program(positive['program'])         
-                program = cross.operators_in_program(candidate['program'])               # 모델: operator, 데이터: operator
+                cand_program = cross.operators_in_program(candidate['program'])               # 모델: operator, 데이터: operator
             
             if input_concat == "qandp":
-                cand = question + " " + '[QNP]' + " " + program
+                cand = cand_question + " " + '[QNP]' + " " + cand_program
             elif input_concat == "ponly":
-                cand = program
+                cand = cand_program
 
             concat_input = question + tokenizer.sep_token + cand
             pos_candidates.append(concat_input)
@@ -301,17 +335,17 @@ def convert_qa_example_test(example, tokenizer):
     if example.negatives:
         neg_candidates=[]
         for candidate in example.negatives:
-            question = candidate['question']          
+            cand_question = candidate['question']          
             if program_type == "prog":
-                program = candidate['program'][:-5]                              # 모델: program, 데이터: new_test
+                cand_program = candidate['program'][:-5]                              # 모델: program, 데이터: new_test
             elif program_type == "ops":
                 # gold_prog = mask_argument_in_program(positive['program'])         
-                program = cross.operators_in_program(candidate['program'])               # 모델: operator, 데이터: operator
+                cand_program = cross.operators_in_program(candidate['program'])               # 모델: operator, 데이터: operator
             
             if input_concat == "qandp":
-                cand = question + " " + '[QNP]' + " " + program
+                cand = cand_question + " " + '[QNP]' + " " + cand_program
             elif input_concat == "ponly":
-                cand = program
+                cand = cand_program
 
             concat_input = question + tokenizer.sep_token + cand
             neg_candidates.append(concat_input)
@@ -393,54 +427,63 @@ def test():
 
 
     """Import dataset and convert info features"""
-    # cross.write_log(log_path, "Readings "+ conf.inference_file + " and " + conf.train_original)
-    # record_start = time.time()
-    # kwargs_load = {
-    #     'finqa_train': conf.train_original,
-    #     'finqa_test': conf.inference_file,
-    #     'constants_path': conf.constant_file,
-    #     'archive_path': conf.archive_path,
-    #     'mode': mode,
-    #     'q_score_available': conf.q_score_avail_test,
-    #     'p_score_available': conf.p_score_avail_test,
-    #     'candidates_available': conf.candidates_avail_test,
-    #     'num_test': conf.num_test
-    # }
-    # train_data, test_data, q_scores, p_scores, gold_indices, constants, candidates = load_dataset_test(**kwargs_load)
-    # record_time = time.time() - record_start
-    # cross.write_log(log_path, "Time for loading data: %.3f" %record_time)
+    if conf.data_type == 'base':
+        cross.write_log(log_path, "Readings "+ conf.inference_file + " and " + conf.train_original)
+        record_start = time.time()
+        kwargs_load = {
+            'finqa_train': conf.train_original,
+            'finqa_test': conf.inference_file,
+            'constants_path': conf.constant_file,
+            'archive_path': conf.archive_path,
+            'mode': mode,
+            'q_score_available': conf.q_score_avail_test,
+            'p_score_available': conf.p_score_avail_test,
+            'candidates_available': conf.candidates_avail_test,
+            'num_test': conf.num_test
+        }
+        train_data, test_data, q_scores, p_scores, gold_indices, constants, candidates = load_dataset_test(**kwargs_load)
+        record_time = time.time() - record_start
+        cross.write_log(log_path, "Time for loading data: %.3f" %record_time)
+
+        cross.write_log(log_path, "Get examples...")
+        record_start = time.time()
+        inf_examples = get_examples_test(train_data, test_data, q_scores, p_scores, constants, candidates)
+        record_time = time.time() - record_start
+        cross.write_log(log_path, "Time for getting examples: %.3f" %record_time)
+    
+    elif conf.data_type == 'biencoder':
+        cross.write_log(log_path, "Readings and getting examples from "+ conf.inference_file)
+        record_start = time.time()
+        test_data, inf_examples, gold_indices = get_examples_test_biencoder(conf.inference_file, conf.constant_file, conf.bienc_num)
+        record_time = time.time() - record_start
+        cross.write_log(log_path, "Time for getting examples: %.3f" %record_time)
+
+
+    if conf.test_feature_available:
+        cross.write_log(log_path, "Loading inference features")
+        inf_features = pickle.load(open(conf.archive_path+ 'cross_' + mode + '_' + str(conf.num_test) + '_features', 'rb'))
+    
+    else:
+        cross.write_log(log_path, "Starts converting inference data to features")
+        record_start = time.time()
+        inf_features, neg_features = convert_to_features_test(inf_examples, tokenizer)
+        record_time = time.time() - record_start
+        cross.write_log(log_path, "Time for converting inference data to input features: %.3f" %record_time)
+        # sampling.save_archive(conf.archive_path, inf_features, 'cross_' + mode + '_' + str(conf.num_test) + '_features')
 
     # cross.write_log(log_path, "Get examples...")
     # record_start = time.time()
-    # inf_examples = get_examples_test(train_data, test_data, q_scores, p_scores, constants, candidates)
+    # inf_data, inf_examples = cross.read_examples(conf.inference_file, log_path, "test")
     # record_time = time.time() - record_start
     # cross.write_log(log_path, "Time for getting examples: %.3f" %record_time)
 
-    # if conf.test_feature_available:
-    #     cross.write_log(log_path, "Loading inference features")
-    #     inf_features = pickle.load(open(conf.archive_path+ 'cross_' + mode + '_' + str(conf.num_test) + '_features', 'rb'))
-    
-    # else:
-    #     cross.write_log(log_path, "Starts converting inference data to features")
-    #     record_start = time.time()
-    #     inf_features, neg_features = convert_to_features_test(inf_examples, tokenizer)
-    #     record_time = time.time() - record_start
-    #     cross.write_log(log_path, "Time for converting inference data to input features: %.3f" %record_time)
-    #     sampling.save_archive(conf.archive_path, inf_features, 'cross_' + mode + '_' + str(conf.num_test) + '_features')
-
-    cross.write_log(log_path, "Get examples...")
-    record_start = time.time()
-    inf_data, inf_examples = cross.read_examples(conf.inference_file, log_path, "test")
-    record_time = time.time() - record_start
-    cross.write_log(log_path, "Time for getting examples: %.3f" %record_time)
-
-    kwargs={'examples': inf_examples, 'tokenizer': tokenizer}
-    cross.write_log(log_path, "Starts converting inference data to features")
-    record_start = time.time()
-    inf_features = cross.convert_to_features(**kwargs)
-    cross.write_log(log_path, "Inference starts...")
-    record_time = time.time() - record_start
-    cross.write_log(log_path, "Time for converting inference data to input features: %.3f" %record_time)
+    # kwargs={'examples': inf_examples, 'tokenizer': tokenizer}
+    # cross.write_log(log_path, "Starts converting inference data to features")
+    # record_start = time.time()
+    # inf_features = cross.convert_to_features(**kwargs)
+    # cross.write_log(log_path, "Inference starts...")
+    # record_time = time.time() - record_start
+    # cross.write_log(log_path, "Time for converting inference data to input features: %.3f" %record_time)
 
     data_iterator = cross.DataLoader(is_training=False, data=inf_features, batch_size=conf.batch_size_test)
     
@@ -472,8 +515,8 @@ def test():
             cand_program.extend(c_program)
 
     output_prediction_file = os.path.join(results_path, "predictions.json")
-    metrics, precision = cross.retrieve_evaluate(all_logits, query_index, cand_index, cand_question, cand_program, output_prediction_file, conf.inference_file, topk=conf.topk)
-    # metrics = retrieve_evaluate_test(test_data, gold_indices, all_logits, query_index, cand_index, cand_question, cand_program, output_prediction_file, topk=conf.topk)
+    # metrics, precision = cross.retrieve_evaluate(all_logits, query_index, cand_index, cand_question, cand_program, output_prediction_file, conf.inference_file, topk=conf.topk)
+    metrics = retrieve_evaluate_test(test_data, gold_indices, all_logits, query_index, cand_index, cand_question, cand_program, output_prediction_file, topk=conf.topk)
     cross.write_log(log_path, metrics)
 
 

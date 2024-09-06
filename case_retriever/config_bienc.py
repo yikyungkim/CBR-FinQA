@@ -1,25 +1,25 @@
 class parameters():
 
     """Set path"""
-    root_path = "/shared/s3/lab07/yikyung/cbr/"
-    output_path = '/shared/s3/lab07/yikyung/cbr/case_retriever/output/train/'         # train, inference
-    cache_dir = "/home/s3/yikyungkim/research/cbr/cache"
+    # root_path = "/shared/s3/lab07/yikyung/cbr/"
+    output_path = '/data2/yikyungkim/case_retriever/inference/bi_bert-base_q+p_mixed_100300_random10/'         # train, inference
+    cache_dir = "/data2/yikyungkim/cache"
 
     """Set dataset path"""
-    train_file = root_path + "dataset/case_retriever/train_score_100.json"           # use when training with question similar top-100
-    valid_file = root_path + "dataset/case_retriever/dev_score_100.json"
+    train_file = "/data2/yikyungkim/dataset/case_retriever/train_score_100.json" 
+    valid_file = "/data2/yikyungkim/dataset/case_retriever/dev_score_100.json"
 
-    train_original = root_path + "dataset/finqa_original/train.json"                 # use when training with candidates from all dataset
-    valid_original = root_path + "dataset/finqa_original/dev.json"
-    constant_file = root_path + "dataset/finqa_original/constant_list.txt"
-    archive_path = root_path + 'dataset/archives/'
+    train_original = "/data2/yikyungkim/dataset/finqa_original/train_random10.json"
+    valid_original = "/data2/yikyungkim/dataset/finqa_original/dev_random.json"
+    constant_file = "/data2/yikyungkim/dataset/finqa_original/constant_list.txt"
+    archive_path = "/data2/yikyungkim/case_retriever/archives/"
 
 
     """ For inference """
     # we will need inference file for train, valid, and test for program generator
-    saved_model_path = '/shared/s3/lab07/yikyung/cbr/case_retriever/output/train/bi_bert-base_q+p_mixed_cand200/model/epoch_8'    
+    saved_model_path = '/data2/yikyungkim/case_retriever/train/bi_bert-base_q+p_mixed_100300_random10/model/epoch_7'    
     # inference_file = root_path + "dataset/case_retriever/test_score_100.json"    
-    inference_file = root_path + "dataset/finqa_original/test.json"    
+    inference_file = "/data2/yikyungkim/dataset/finqa_original/test_random1.json"
 
 
     """ Resume training """
@@ -29,8 +29,8 @@ class parameters():
 
 
     """Set model"""  
-    mode = 'train'                   # train, test
-    dir_name = 'bi_bert-base_q+p_mixed_100300'        
+    mode = 'test'                   # train, test
+    dir_name = 'test_random'        
 
     model = 'bert'       
     bert_size = "bert-base-uncased"         
@@ -73,7 +73,7 @@ class parameters():
     """For validation & test set"""              
     q_score_avail_test = False          # if question similarity score is already computed or not (similarity between inference question <-> training question)
     p_score_avail_test = False          # if program score is already computed or not 
-    candidates_avail_test = False       # if top-(pool) question similar candidates are saved or not
     num_test = 300                      # number of question similar cases to use for inference (100, 300, 1000, 6251)
+    candidates_avail_test = False       # if top-(pool) question similar candidates are saved or not
     test_feature_available = False      # if converted features are saved or not
 

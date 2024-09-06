@@ -27,13 +27,14 @@ def save_archive(archive_path, data, output_name):
 
 " ------- functions for questions --------"
 def get_embedding(questions):
-    bert_size = "bert-base-uncased"
-    tokenizer = BertTokenizer.from_pretrained(bert_size)
-    model = BertModel.from_pretrained(bert_size)
+    # bert_size = "bert-base-uncased"
+    # tokenizer = BertTokenizer.from_pretrained(bert_size)
+    # model = BertModel.from_pretrained(bert_size)
 
     # bert_size = "roberta-base"
-    # tokenizer = RobertaTokenizer.from_pretrained(bert_size)
-    # model = BertModel.from_pretrained(bert_size)
+    bert_size = "roberta-large"
+    tokenizer = RobertaTokenizer.from_pretrained(bert_size)
+    model = RobertaModel.from_pretrained(bert_size)
 
     model = nn.DataParallel(model)
     model.eval()
@@ -263,7 +264,8 @@ def load_dataset(finqa_dataset_path, constants_path, archive_path,
         questions = [data[i]['qa']['question'] for i in range(len(data))]
         embedding = get_embedding(questions)
         q_scores = question_score(questions, embedding)
-        save_archive(archive_path, q_scores, mode + '_scores_question')
+        # save_archive(archive_path, q_scores, mode + '_scores_question')
+        # save_archive(archive_path, q_scores, mode + '_scores_question_random')
 
     # compute program score
     if p_score_available:
@@ -276,8 +278,10 @@ def load_dataset(finqa_dataset_path, constants_path, archive_path,
         threshold = 0.9
         programs = [data[i]['qa']['program'] for i in range(len(data))]
         p_scores, gold_indices = program_score(programs, constants, ops_weight, threshold)
-        save_archive(archive_path, p_scores, mode + '_scores_program')
-        save_archive(archive_path, gold_indices, mode + '_gold_indices')
+        # save_archive(archive_path, p_scores, mode + '_scores_program')
+        # save_archive(archive_path, gold_indices, mode + '_gold_indices')
+        # save_archive(archive_path, p_scores, mode + '_scores_program_random')
+        # save_archive(archive_path, gold_indices, mode + '_gold_indices_random')
 
     # sort by question score and get case pool
     if candidates_available:
@@ -287,8 +291,10 @@ def load_dataset(finqa_dataset_path, constants_path, archive_path,
     else:
         print('starts getting question similar candidates')
         gold_cands, non_gold_cands = get_question_similar_candidates(data, q_scores, gold_indices, pos_pool, neg_pool)
-        save_archive(archive_path, gold_cands, mode + '_' + str(pos_pool) + '_gold_candidates')
-        save_archive(archive_path, non_gold_cands, mode + '_' + str(neg_pool) + '_non_gold_candidates')
+        # save_archive(archive_path, gold_cands, mode + '_' + str(pos_pool) + '_gold_candidates')
+        # save_archive(archive_path, non_gold_cands, mode + '_' + str(neg_pool) + '_non_gold_candidates')
+        # save_archive(archive_path, gold_cands, mode + '_' + str(pos_pool) + '_gold_candidates_random')
+        # save_archive(archive_path, non_gold_cands, mode + '_' + str(neg_pool) + '_non_gold_candidates_random')
 
     return data, q_scores, p_scores, gold_indices, constants, gold_cands, non_gold_cands
 
@@ -411,6 +417,7 @@ def get_random_samples(data, constants, sampling, seed, index, q_score, p_score,
         negative_index_sampled = random.choices(non_gold_index_leftover, weights=non_gold_score_leftover, k=num_sampled)
 
         negative_index = negative_index_hard + negative_index_sampled        
+    
 
     positives=[]
     for c_index in positive_index:

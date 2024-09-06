@@ -22,6 +22,8 @@ import pickle
 import wandb
 
 from config_cross import parameters as conf
+import sampling as sampling
+import cross_encoder_test as inference
 
 
 
@@ -30,7 +32,6 @@ def write_log(log_file, s):
     print(s)
     with open(log_file, 'a') as f:
         f.write(s+'\n')
-
 
 def keep_recent_models(model_path, max_files):
     os.chdir(model_path)
@@ -43,7 +44,6 @@ def keep_recent_models(model_path, max_files):
             os.remove(model_path + del_file)
 
 
-""" Read datasets and converting to features """
 class QuestionExample(
     collections.namedtuple(
     "QuestionExample",
@@ -65,80 +65,6 @@ def tokenize(tokenizer, text):
         else:
             tokens.extend(tokenize_fn(token))
     return tokens
-
-def program_tokenization(original_program):
-    original_program = original_program.split(', ')
-    program = []
-    for tok in original_program:
-        cur_tok = ''
-        for c in tok:
-            if c == ')':
-                if cur_tok != '':
-                    program.append(cur_tok)
-                    cur_tok = ''
-            cur_tok += c
-            if c in ['(', ')']:
-                program.append(cur_tok)
-                cur_tok = ''
-        if cur_tok != '':
-            program.append(cur_tok)
-#     program.append('EOF')
-    return program
-
-def levenshtein(s1, s2, debug=False):
-    if len(s1) < len(s2):
-        return levenshtein(s2, s1, debug)
-    if len(s2) == 0:
-        return len(s1)
-    
-    previous_row = range(len(s2) + 1)
-    for i, c1 in enumerate(s1):
-        current_row = [i + 1]
-        for j, c2 in enumerate(s2):
-            insertions = previous_row[j + 1] + 1
-            deletions = current_row[j] + 1
-            substitutions = previous_row[j] + (c1 != c2)
-            current_row.append(min(insertions, deletions, substitutions))
-        if debug:
-            print(current_row[1:])
-        previous_row = current_row
-
-    return previous_row[-1]
-
-def mask_argument_in_program(original_program):
-    original_program = original_program.split(', ')
-    program = []
-    for tok in original_program:
-        cur_tok = ''
-        for c in tok:
-            if c == ')':
-                if cur_tok != '':
-                    program.append(cur_tok)
-                    cur_tok = ''
-            cur_tok += c
-            if c in ['(', ')']:
-                program.append(cur_tok)
-                cur_tok = ''
-        if cur_tok != '':
-            program.append(cur_tok)
-    # print(program)
-
-    i=0
-    while i < len(program):
-        if i%4==1:
-            program[i]='arg, '
-        elif i%4==2:
-            program[i]='arg'
-        elif i%4==3:
-            if i != (len(program)-1):
-                program[i]='), '
-        i+=1
-    
-    mask_program = ""
-    for i in range(len(program)):
-        mask_program+=program[i]
-        
-    return mask_program
 
 
 def operators_in_program(original_program):
@@ -171,251 +97,27 @@ def operators_in_program(original_program):
     return operators
 
 
-def wrap_pair(tokenizer, question, candidate, label):
-    
-    max_seq_len = conf.max_seq_len
-    cls_token = tokenizer.cls_token
-    sep_token = tokenizer.sep_token
+""" Reading examples """
+def load_data(input_path):
+    with open(input_path) as file:
+        input_data = json.load(file)
+    return input_data
 
-    question_token = tokenize(tokenizer, question)
-    candidate_token = tokenize(tokenizer, candidate)
-
-    tokens = [cls_token] + question_token + [sep_token] + candidate_token
-    seg_ids = [0] * len(tokens)
-
-    if len(tokens) > max_seq_len:
-        print('too long')
-        tokens = tokens[:max_seq_len-1]
-        tokens += [sep_token]
-        seg_ids = seg_ids[:max_seq_len]
-    
-    input_ids = tokenizer.convert_tokens_to_ids(tokens)
-    input_mask = [1]*len(input_ids)
-
-    padding = [0]*(max_seq_len-len(input_ids))
-    input_ids.extend(padding)
-    input_mask.extend(padding)
-    seg_ids.extend(padding)
-
-    assert len(input_ids)==max_seq_len
-    assert len(input_mask)==max_seq_len
-    assert len(seg_ids)==max_seq_len
-
-    features = {
-        'input_ids': input_ids,
-        'input_mask': input_mask,
-        'seg_ids': seg_ids,
-        'label': label
-    }
-
-    return features
+# use question similarity top-100 for training cases
+def read_examples(input_data, mode, seed):
+    examples=[]
+    for i, data in enumerate(input_data):
+        examples.append(read_example(data, mode, seed))
+    return examples     
 
 
-def convert_qa_example(example, tokenizer):
-    
-    max_seq_len = conf.max_seq_len
-    input_concat = conf.input_concat
-    program_type = conf.program_type
-    
-    pos_features=[]
-    neg_features=[]
-    question=example.question
-    index = example.org_index
-
-    for positive in example.positives:
-        gold_ques = positive['question']          
-        if program_type == "prog":
-            gold_prog = positive['program'][:-5]                              # 모델: program, 데이터: new_test
-        elif program_type == "ops":
-            # gold_prog = mask_argument_in_program(positive['program'])         
-            gold_prog = operators_in_program(positive['program'])               # 모델: operator, 데이터: operator
-        if input_concat == "qandp":
-            gold_cand = gold_ques + " " + '[QNP]' + " " + gold_prog
-        elif input_concat == "ponly":
-            gold_cand = gold_prog
-        features = wrap_pair(tokenizer, question, gold_cand, 1)
-        features['query_index']=index
-        features['cand_index']=positive['index']
-        features['cand_question']=positive['question']
-        features['cand_program']=positive['program']
-        pos_features.append(features)
-    
-    for negative in example.negatives:
-        neg_ques = negative['question']                                   
-        if program_type == "prog":
-            neg_prog = negative['program'][:-5]                              # 모델: program, 데이터: new_test
-        elif program_type == "ops":
-            # neg_prog = mask_argument_in_program(negative['program'])         
-            neg_prog = operators_in_program(negative['program'])               # 모델: operator, 데이터: operator
-        if input_concat == "qandp":
-            neg_cand = neg_ques + " " + '[QNP]' + " " + neg_prog
-        elif input_concat == "ponly":
-            neg_cand = neg_prog
-        features = wrap_pair(tokenizer, question, neg_cand, 0)
-        features['query_index']=index
-        features['cand_index']=negative['index']
-        features['cand_question']=negative['question']
-        features['cand_program']=negative['program']
-        neg_features.append(features)
-        
-    return pos_features, neg_features
-
-
-def get_negatives_by_score(gold_program, negative_candidates):
-    
-    program_type = conf.program_type
-
-    gold_program = program_tokenization(gold_program)
-    if program_type == 'ops':
-        i=0
-        gold_ops=[]
-        while i < len(gold_program):
-            gold_ops.append(gold_program[i])
-            i+=4
-
-    elif program_type == 'prog':
-        i=0
-        gold_ops=[]
-        gold_args=[]
-        while i < len(gold_program):
-            if (i%4==1) or (i%4==2):
-                gold_args.append(gold_program[i])
-            if (i%4==0):
-                if gold_program[i]!='EOF':
-                    gold_ops.append(gold_program[i])
-            i+=1
-    
-    # print('gold_ops: ', gold_ops)
-    # print('gold_args: ', gold_args)
-    
-    """ calculate distance score for negative candidates """
-    negative_candidates_scores=[]
-    for negative in negative_candidates:
-        neg_program = program_tokenization(negative['program'])
-        i=0
-        neg_ops=[]
-        neg_args=[]
-        if program_type == 'ops':
-            while i < len(neg_program):
-                neg_ops.append(neg_program[i])
-                i+=4
-            ops_len = len(gold_ops)
-            ops_distance = levenshtein(gold_ops, neg_ops)
-            score = (ops_len - ops_distance)/ops_len
-
-        elif program_type == 'prog':
-            while i < len(neg_program):
-                if (i%4==1) or (i%4==2):
-                    neg_args.append(neg_program[i])
-                if (i%4==0):
-                    if neg_program[i]!='EOF':
-                        neg_ops.append(neg_program[i])
-                i+=1
-            ops_len = len(gold_ops)
-            ops_distance = levenshtein(gold_ops, neg_ops)
-            ops_score = (ops_len - ops_distance)/ops_len
-            arg_len = len(gold_args)
-            arg_distance = levenshtein(gold_args, neg_args)
-            arg_score = (arg_len - arg_distance)/arg_len
-            score = 0.8 * ops_score + 0.2 * arg_score
-        negative_candidates_scores.append([negative, score])
-        
-    negative_candidates_scores.sort(key=lambda x:x[1])
-    return negative_candidates_scores
-
-
-def get_positives_and_negatives(data, mode):
-
-    neg_ratio = conf.neg_ratio
-    hard_ratio = conf.hard_ratio
-    fix_ratio = conf.fix_ratio
-    data_type = conf.data_type
-    negative_type = conf.negative_type
-
-    if data_type == 'base':
-        gold_program = data['program']
-        gold_index = [gold['index'] for gold in data['gold_index']]
-        golds = data['gold_index']
-        num_golds = len(golds)
-
-        candidates = data['candidate_questions']
-        negative_candidates = []
-        for candidate in candidates:
-            if candidate['index'] not in gold_index:
-                negative_candidates.append(candidate)
-
-        k_pos = round(100/(neg_ratio+1))
-        if num_golds < k_pos:
-            k_pos = num_golds
-        k_neg = k_pos * neg_ratio
-
-        if mode == "train":
-            # if number of negatives are less than k_neg, use all negatives
-            if len(negative_candidates) < k_neg:
-                random.shuffle(golds)
-                positives = golds[:k_pos]
-                negatives = negative_candidates
-                return positives, negatives
-
-            if negative_type == 'random':           
-                random.shuffle(golds)
-                random.shuffle(negative_candidates)
-                positives = golds[:k_pos]
-                negatives = negative_candidates[:k_neg]
-
-            elif negative_type == 'hard':
-                negative_candidates_scores = get_negatives_by_score(gold_program, negative_candidates)
-                # print('num_negs_scores: ', len(negative_candidates_scores))
-                num_hard = round(k_neg*hard_ratio)
-                num_easy = k_neg - num_hard
-                # print('num_hard: ', num_hard)
-                # print('num_easy: ', num_easy)
-                hard_index = len(negative_candidates_scores)-num_hard
-                hard_negatives = [negative[0] for negative in negative_candidates_scores[hard_index:]]
-                easy_negatives = [negative[0] for negative in negative_candidates_scores[:num_easy]]
-                random.shuffle(golds)
-                positives = golds[:k_pos]
-                negatives = hard_negatives + easy_negatives     
-            
-            elif negative_type == 'adjusted_hard':
-                negative_candidates_scores = get_negatives_by_score(gold_program, negative_candidates)
-                # print('num_negs_scores: ', len(negative_candidates_scores))
-                num_hard = round(k_neg*hard_ratio)
-                num_easy = k_neg - num_hard
-                # print('num_hard: ', num_hard)
-                # print('num_easy: ', num_easy)
-                fix_hard_index = len(negative_candidates_scores)-round(num_hard * fix_ratio)
-                fix_easy_index = round(num_easy * fix_ratio)
-                fix_hard_negatives = [negative[0] for negative in negative_candidates_scores[fix_hard_index:]]
-                fix_easy_negatives = [negative[0] for negative in negative_candidates_scores[:fix_easy_index]]
-                # print('num_fix_hard: ', len(fix_hard_negatives))
-                # print('num_fix_easy: ', len(fix_easy_negatives))
-                
-                rand_neg_num = k_neg - len(fix_hard_negatives) - len(fix_easy_negatives)
-                random_negatives = [negative[0] for negative in negative_candidates_scores[fix_easy_index:fix_hard_index]]
-                random_negatives = random.sample(random_negatives, rand_neg_num)
-                # print('num_random_neg:' ,len(random_negatives))
-                random.shuffle(golds)
-                positives = golds[:k_pos]
-                negatives = fix_hard_negatives + fix_easy_negatives + random_negatives
-        else:
-            positives = golds
-            negatives = negative_candidates
-
-    elif data_type == "biencoder":
-        if mode == 'test':
-            positives = []
-            negatives = data['reranked'][:conf.num_test]
-
-    return positives, negatives
-
-
-
-def read_example(data, mode):
-    org_index=data['original_index']
+def read_example(data, mode, seed):
+    org_index=data['original_index']       
     question=data['question']
     program=data['program']
-    positives, negatives = get_positives_and_negatives(data, mode)
+    candidates = get_positives_and_negatives(data, mode, seed)
+    positives=candidates[0]
+    negatives=candidates[1]
     return QuestionExample(
         org_index=org_index, 
         question=question, 
@@ -424,23 +126,149 @@ def read_example(data, mode):
         negatives=negatives)
 
 
-def read_examples(input_path, log_path,  mode):
-    write_log(log_path, "Readings "+input_path)
-    with open(input_path) as file:
-        input_data = json.load(file)
-    examples=[]
-    for data in input_data:
-        examples.append(read_example(data, mode))
-    return input_data, examples
+def get_positives_and_negatives(data, mode, seed):
+    random.seed(seed)
 
+    if conf.data_type == 'base':
+        gold_program = data['program']
+        gold_index = [gold['index'] for gold in data['gold_index']]
+        golds = data['gold_index']
+        num_golds = len(golds)
+
+        candidates = data['candidate_questions']
+        negative_candidates = []
+        negative_scores_scaled = []
+        min_score = min([candidate['program_score'] for candidate in candidates])
+        for candidate in candidates:
+            if candidate['index'] not in gold_index:
+                negative_candidates.append(candidate)
+                negative_scores_scaled.append(candidate['program_score'] - min_score)
+
+        k_pos = round(conf.train_size / (conf.neg_ratio+1))
+        if num_golds < k_pos:
+            k_pos = num_golds
+        k_neg = k_pos * conf.neg_ratio
+
+        if mode == "train":
+            # if number of negatives are less than k_neg, use all negatives
+            if len(negative_candidates) < k_neg:
+                positives = random.sample(golds, k_pos)
+                negatives = negative_candidates
+                return positives, negatives
+
+            if conf.sampling == 'random':    
+                positives = random.sample(golds, k_pos)
+                negatives = random.sample(negative_candidates, k_neg)       
+
+            elif conf.sampling == 'hard':
+                positives = random.sample(golds, k_pos)
+                negatives = random.choices(negative_candidates, weights=negative_scores_scaled, k=k_neg)        
+        else:
+            positives = candidates
+            negatives = []
+
+    elif conf.data_type == "biencoder":
+        if mode == 'test':
+            positives = data['reranked'][:conf.bienc_num]
+            negatives = []
+
+    return positives, negatives
+
+
+
+
+""" Converting examples to model input (features) """
 
 def convert_to_features(examples, tokenizer):
     pos_features=[]
     neg_features=[]
     for (index, example) in enumerate(examples):
-        pos, neg = example.convert_example(tokenizer=tokenizer)
+        pos, neg = convert_qa_example(example, tokenizer)
         pos_features.extend(pos)
         neg_features.extend(neg)
+    return pos_features, neg_features
+
+
+def convert_qa_example(example, tokenizer):
+    
+    question=example.question
+    index = example.org_index
+    program_type = conf.program_type
+    input_concat = conf.input_concat
+
+    pos_features=[]
+    neg_features=[]
+
+    if example.positives:
+        pos_candidates=[]
+        for candidate in example.positives:
+            cand_question = candidate['question']          
+            if program_type == "prog":
+                cand_program = candidate['program'][:-5]                              # 모델: program, 데이터: new_test
+            elif program_type == "ops":
+                # gold_prog = mask_argument_in_program(positive['program'])         
+                cand_program = operators_in_program(candidate['program'])               # 모델: operator, 데이터: operator
+            
+            if input_concat == "qandp":
+                cand = cand_question + " " + '[QNP]' + " " + cand_program
+            elif input_concat == "ponly":
+                cand = cand_program
+
+            concat_input = question + tokenizer.sep_token + cand
+            pos_candidates.append(concat_input)
+        
+        encoding_pos = tokenizer(pos_candidates, max_length=conf.max_seq_len, padding='max_length', truncation=True)
+
+        pos_features=[]
+        for i, candidate in enumerate(example.positives):
+            features={}
+            features['input_ids']=encoding_pos['input_ids'][i]
+            features['input_mask']=encoding_pos['attention_mask'][i]
+            features['seg_ids']=[0]*conf.max_seq_len
+            features['label']=1
+            features['query_index']=index
+            features['cand_index']=candidate['index']
+            features['cand_question']=candidate['question']
+            features['cand_program']=candidate['program']
+            pos_features.append(features)
+    else:
+        pos_features=[]
+        
+    if example.negatives:
+        neg_candidates=[]
+        for candidate in example.negatives:
+            cand_question = candidate['question']          
+            if program_type == "prog":
+                cand_program = candidate['program'][:-5]                              # 모델: program, 데이터: new_test
+            elif program_type == "ops":
+                # gold_prog = mask_argument_in_program(positive['program'])         
+                cand_program = operators_in_program(candidate['program'])               # 모델: operator, 데이터: operator
+            
+            if input_concat == "qandp":
+                cand = cand_question + " " + '[QNP]' + " " + cand_program
+            elif input_concat == "ponly":
+                cand = cand_program
+
+            concat_input = question + tokenizer.sep_token + cand
+            neg_candidates.append(concat_input)
+
+        encoding_neg = tokenizer(neg_candidates, max_length=conf.max_seq_len, padding='max_length', truncation=True)
+
+        neg_features=[]
+        for i, candidate in enumerate(example.negatives):
+            features={}
+            features['input_ids']=encoding_neg['input_ids'][i]
+            features['input_mask']=encoding_neg['attention_mask'][i]
+            features['seg_ids']=[0]*conf.max_seq_len
+            features['label']=0
+            features['query_index']=index
+            features['cand_index']=candidate['index']
+            features['cand_question']=candidate['question']
+            features['cand_program']=candidate['program']
+            neg_features.append(features)
+    else:
+        neg_features=[]
+        
     return pos_features, neg_features
 
 
@@ -448,12 +276,15 @@ def convert_to_features(examples, tokenizer):
 """ Data Loader """
 class DataLoader:
     def __init__(self, is_training, data, batch_size):
-        self.data_pos = data[0]
-        self.data_neg = data[1]
+        if is_training:
+            self.data_pos = data[0]
+            self.data_neg = data[1]
+            self.data = self.data_pos + self.data_neg
+        else:
+            self.data = data
+
         self.batch_size = batch_size
-        self.is_training = is_training
-        
-        self.data = self.data_pos + self.data_neg
+        self.is_training = is_training    
         self.data_size = len(self.data)
         self.num_batches = int(self.data_size / batch_size) if self.data_size % batch_size == 0 \
             else int(self.data_size / batch_size) + 1
@@ -481,7 +312,6 @@ class DataLoader:
         self.shuffle_all_data()
 
     def shuffle_all_data(self):
-        self.data = self.data_pos + self.data_neg
         random.shuffle(self.data)
         return
 
@@ -517,8 +347,8 @@ class DataLoader:
 
 """ Model """
 class Bert_model(nn.Module):
-    # def __init__(self, hidden_size, dropout_rate, tokenizer):
-    def __init__(self, hidden_size, dropout_rate):
+    def __init__(self, hidden_size, dropout_rate, tokenizer):
+    # def __init__(self, hidden_size, dropout_rate):
         super(Bert_model, self).__init__()
 
         self.hidden_size = hidden_size
@@ -586,29 +416,131 @@ def train():
     model = model.to(conf.device)           
     model.train()
 
-    train_loader = DataLoader(is_training=True, data=train_features, batch_size=conf.batch_size)
-    print("total number of batches: ", train_loader.num_batches)
+
+    """ Load training data """
+    if not conf.use_all_cands:
+        write_log(log_path, "Readings "+ conf.train_file)
+        train_data = load_data(conf.train_file)
+        train_examples = read_examples(train_data, 'train', 0)
+
+        kwargs={'examples': train_examples, 'tokenizer': tokenizer}
+        write_log(log_path, "Starts converting training data to features")
+        record_start = time.time()
+        train_features = convert_to_features(**kwargs)
+        record_time = time.time() - record_start
+        write_log(log_path, "Time for converting training data to input features: %.3f" %record_time)
+
+
+    elif conf.use_all_cands:
+        # compute scores and get gold and non-gold candidates (positive and negative pool)
+        write_log(log_path, "Readings "+ conf.train_original)
+        record_start = time.time()
+        kwargs_load={
+            'finqa_dataset_path': conf.train_original,
+            'constants_path': conf.constant_file,
+            'archive_path': conf.archive_path,
+            'mode': mode,
+            'q_score_available': conf.q_score_available,
+            'p_score_available': conf.p_score_available,
+            'candidates_available': conf.candidates_available,
+            'pos_pool': conf.pos_pool,
+            'neg_pool': conf.neg_pool
+        }
+        data, q_scores, p_scores, gold_indices, constants, gold_cands, non_gold_cands = sampling.load_dataset(**kwargs_load)
+        record_time = time.time() - record_start
+        write_log(log_path, "Time for loading data: %.3f" %record_time)
+
+        write_log(log_path, "Starts sampling")
+        record_start = time.time()
+        kwargs_examples={
+            'data': data,
+            'q_scores': q_scores,
+            'p_scores': p_scores,
+            'gold_indices': gold_indices,
+            'gold_cands': gold_cands,
+            'non_gold_cands': non_gold_cands,
+            'constants': constants,
+            'sampling': conf.sampling,
+            'seed': 0,
+            'train_size': conf.train_size,
+            'neg_ratio': conf.neg_ratio
+        }
+        train_examples = sampling.get_examples(**kwargs_examples)
+        record_time = time.time() - record_start
+        write_log(log_path, "Time for sampling data: %.3f" %record_time)
+
+        write_log(log_path, "Starts converting training data to features")
+        record_start = time.time()
+        train_features = convert_to_features(train_examples, tokenizer)
+        record_time = time.time() - record_start
+        write_log(log_path, "Time for converting training data to input features: %.3f" %record_time)
+        
+
+    """ Load validation data """
+    # load validation data (use cases from valid set)
+    # write_log(log_path, "Readings "+ conf.valid_file)
+    # record_start = time.time()
+    # valid_examples = read_examples(load_data(conf.valid_file), 'valid', 0)
+    # write_log(log_path, "Starts converting validation data to features")
+    # valid_features = convert_to_features(valid_examples, tokenizer)
+    # record_time = time.time() - record_start
+    # write_log(log_path, "Time for loading and converting validation data to input features: %.3f" %record_time)
+
+    # load validation data (use cases form training set)
+    write_log(log_path, "Readings "+ conf.valid_original + " and " + conf.train_original)
+    record_start = time.time()
+    kwargs_load_valid = {
+        'finqa_train': conf.train_original,
+        'finqa_test': conf.valid_original,
+        'constants_path': conf.constant_file,
+        'archive_path': conf.archive_path,
+        'mode': 'valid',
+        'q_score_available': conf.q_score_avail_test,
+        'p_score_available': conf.p_score_avail_test,
+        'candidates_available': conf.candidates_avail_test,
+        'num_test': conf.num_test
+    }
+    train_data, valid_data, q_scores_valid, p_scores_valid, gold_indices_valid, constants, candidates_valid = inference.load_dataset_test(**kwargs_load_valid)
+    record_time = time.time() - record_start
+    write_log(log_path, "Time for loading validation data: %.3f" %record_time)
+
+    write_log(log_path, "Get validation examples...")
+    record_start = time.time()
+    valid_examples = inference.get_examples_test(train_data, valid_data, q_scores_valid, p_scores_valid, constants, candidates_valid)
+    record_time = time.time() - record_start
+    write_log(log_path, "Time for getting validation examples: %.3f" %record_time)
     
+    if conf.test_feature_available:
+        write_log(log_path, "Loading validation features")
+        valid_features = pickle.load(open(conf.archive_path+ 'cross_valid' + '_' + str(conf.num_test) + '_features', 'rb'))
+    
+    else:
+        write_log(log_path, "Starts converting validation data to features")
+        record_start = time.time()
+        valid_features, neg_features = convert_to_features(valid_examples, tokenizer)
+        record_time = time.time() - record_start
+        write_log(log_path, "Time for converting validation data to input features: %.3f" %record_time)
+        sampling.save_archive(conf.archive_path, valid_features, 'cross_valid' + '_' + str(conf.num_test) + '_features')
+
+
+    train_loader = DataLoader(is_training=True, data=train_features, batch_size=conf.batch_size)
+    total_steps = train_loader.num_batches * conf.epoch
+    write_log(log_path, "total number of batches: %d" %(train_loader.num_batches))
+    
+    # for optimization
     early_stop = EarlyStopping(patience=conf.patience)
     optimizer = optim.Adam(model.parameters(), conf.learning_rate)
-    total_steps = train_loader.num_batches * conf.epoch
     if not conf.resume:
         scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps = total_steps*conf.warm_up_prop, num_training_steps=total_steps)  # resume
     
-    weights = [1 - (conf.neg_ratio / (conf.neg_ratio+1)), 1 - (1 / (conf.neg_ratio+1))]
-    weights = torch.FloatTensor(weights).to(conf.device)
-
     if conf.loss == 'cross':
-        # loss_function = nn.CrossEntropyLoss(reduction='none', weight=weights)
         loss_function = nn.CrossEntropyLoss(reduction='none')
     elif conf.loss == 'bce':
         loss_function = nn.BCEWithLogitsLoss(reduction='sum')
-    
+
+    # for records
     record_step = 0
     record_loss = 0.0
-    start_time = time.time()
-    max_precision = 0.0
-
     ep_global = 0   
     previous_step = 0  
     if conf.resume:
@@ -618,30 +550,51 @@ def train():
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps = total_steps*conf.warm_up_prop, num_training_steps=total_steps, last_epoch=checkpoint['epoch'])  
 
+    write_log(log_path, "Starts training...")
     for ep in trange(ep_global, conf.epoch, desc="epoch"):
+        write_log(log_path, "Epoch %d starts" %(ep))
+        start_time = time.time()
 
-        """ sample every epoch"""
-        # if ep > 0:
-        #     train_data_ep, train_examples_ep = read_examples(conf.train_file, log_path, 
-        #                                             conf.neg_ratio, conf.hard_ratio, conf.fix_ratio, 
-        #                                             "train", conf.data_type, conf.program_type, conf.negative_type)
-        #     kwargs={'examples': train_examples_ep, 'tokenizer': tokenizer, 'max_seq_len': conf.max_seq_len, 'input_concat': conf.input_concat, 'program_type': conf.program_type}
-        #     write_log(log_path, "Starts converting training data to features")
-        #     train_features_ep = convert_to_features(**kwargs)
+        # sampling every epoch
+        if (conf.resume==False and ep > 0) or (conf.resume==True and ep > ep_global):
+            if not conf.use_all_cands:
+                train_examples = read_examples(train_data, 'train', ep)
+                
+            elif conf.use_all_cands:                
+                record_start = time.time()
+                kwargs_examples={
+                    'data': data,
+                    'q_scores': q_scores,
+                    'p_scores': p_scores,
+                    'gold_indices': gold_indices,
+                    'gold_cands': gold_cands,
+                    'non_gold_cands': non_gold_cands,
+                    'constants': constants,
+                    'sampling': conf.sampling,
+                    'seed': ep,
+                    'train_size': conf.train_size,
+                    'neg_ratio': conf.neg_ratio
+                }
+                train_examples = sampling.get_examples(**kwargs_examples)
+                record_time = time.time() - record_start
+                write_log(log_path, "Time for sampling data: %.3f" %record_time)
 
-        #     train_loader = DataLoader(is_training=True, data=train_features_ep, batch_size=conf.batch_size)
-        #     print("total number of batches: ", train_loader.num_batches)
-            
+            record_start = time.time()
+            train_features = convert_to_features(train_examples, tokenizer)
+            record_time = time.time() - record_start
+            write_log(log_path, "Time for converting training data to input features: %.3f" %record_time)
 
+            train_loader = DataLoader(is_training=True, data=train_features, batch_size=conf.batch_size)
+            total_steps = train_loader.num_batches * conf.epoch
+            write_log(log_path, "total number of batches: %d" %(train_loader.num_batches))
+ 
         train_loader.reset()
-        write_log(log_path, "Epoch %d starts" % (ep))
-        for step, batch in enumerate(train_loader):
-            if ep <= ep_global and step < previous_step:
-                continue            
+        for step, batch in enumerate(train_loader):    
             input_ids = torch.tensor(batch['input_ids']).to(conf.device)
             input_mask = torch.tensor(batch['input_mask']).to(conf.device)
             seg_ids = torch.tensor(batch['seg_ids']).to(conf.device)
-            label = torch.tensor(batch['label'], dtype=torch.float32).to(conf.device)
+            # label = torch.tensor(batch['label'], dtype=torch.float32).to(conf.device)
+            label = torch.tensor(batch['label']).to(conf.device)
 
             model.zero_grad()
             optimizer.zero_grad()
@@ -667,23 +620,28 @@ def train():
                 record_loss = 0.0
                 record_step = 0
 
+        # measure training time for every epoch
+        cost_time = time.time() - start_time
+        write_log(log_path, "----------------------Epoch %d training time = %.3f" % (ep, cost_time))
+
+
         # save model model every epoch
         saved_model_path_dict = os.path.join(model_path, 'epoch_{}'.format(ep))
         torch.save({'epoch': ep, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict()}, saved_model_path_dict)
         # keep_recent_models(model_path+'/', (conf.patience+1))
 
-        # measure training time for every epoch
-        cost_time = time.time() - start_time
-        write_log(log_path, "----------------------Epoch %d time = %.3f" % (ep, cost_time))
-        start_time = time.time()
-        
+
         # record model evaluation and save prediciton file every epoch
+        record_start = time.time()
         model.eval()
         results_path_cnt = os.path.join(results_path, 'prediction', str(ep))
         os.makedirs(results_path_cnt, exist_ok=True)
         write_log(log_path, "----------------------Epoch %d Model Evaluation" % (ep))
-        val_loss = evaluate(valid_features, model, results_path_cnt, "valid")
+        val_loss = evaluate(valid_data, gold_indices_valid, valid_features, model, results_path_cnt, "valid")
         wandb.log({"loss/valid_loss": val_loss})
+        record_time = time.time() - record_start
+        write_log(log_path, "Time for evaluating model: %.3f" %record_time)
+
 
         # # save max precisions (retrieve precision from evaluate)
         # if precision > max_precision:
@@ -704,12 +662,12 @@ def train():
 
 
 """ Model Evaluation """
-def evaluate(features, model, results_path_cnt, mode):
+def evaluate(valid_data, gold_indices_valid, valid_features, model, results_path_cnt, mode):
 
     results_path_cnt_mode = os.path.join(results_path_cnt, mode)
     os.makedirs(results_path_cnt_mode, exist_ok=True)
 
-    data_iterator = DataLoader(is_training=False, data=features, batch_size=conf.batch_size_test)
+    data_iterator = DataLoader(is_training=False, data=valid_features, batch_size=conf.batch_size_test)
 
     if conf.loss == 'cross':
         loss_function = nn.CrossEntropyLoss(reduction='none')
@@ -729,7 +687,8 @@ def evaluate(features, model, results_path_cnt, mode):
             input_ids = torch.tensor(x['input_ids']).to(conf.device)
             input_mask = torch.tensor(x['input_mask']).to(conf.device)
             seg_ids = torch.tensor(x['seg_ids']).to(conf.device)
-            label = torch.tensor(x['label'], dtype=torch.float32).to(conf.device)
+            # label = torch.tensor(x['label'], dtype=torch.float32).to(conf.device)
+            label = torch.tensor(x['label']).to(conf.device)
 
             q_index = x['query_index']
             c_index = x['cand_index']
@@ -752,7 +711,8 @@ def evaluate(features, model, results_path_cnt, mode):
             cand_program.extend(c_program)
             
     output_prediction_file = os.path.join(results_path_cnt_mode, "predictions.json")
-    metrics, precision = retrieve_evaluate(all_logits, query_index, cand_index, cand_question, cand_program, output_prediction_file, conf.valid_file, topk=conf.topk)
+    # metrics, precision = retrieve_evaluate(all_logits, query_index, cand_index, cand_question, cand_program, output_prediction_file, conf.valid_file, topk=conf.topk)
+    metrics = inference.retrieve_evaluate_test(valid_data, gold_indices_valid, all_logits, query_index, cand_index, cand_question, cand_program, output_prediction_file, conf.topk)
 
     val_loss = total_loss/data_iterator.num_batches
     write_log(log_path, "validation loss = %.3f" % (val_loss))
@@ -924,50 +884,50 @@ def retrieve_evaluate(scores, query_index, cand_index, cand_question, cand_progr
     return metrics, precision_3
 
 
-""" Inference """
-def test():
+# """ Inference """
+# def test():
 
-    # model = Bert_model(model_config.hidden_size, conf.dropout_rate, tokenizer)
-    model = Bert_model(model_config.hidden_size, conf.dropout_rate)
-    model = nn.DataParallel(model)
-    model.to(conf.device)
+#     # model = Bert_model(model_config.hidden_size, conf.dropout_rate, tokenizer)
+#     model = Bert_model(model_config.hidden_size, conf.dropout_rate)
+#     model = nn.DataParallel(model)
+#     model.to(conf.device)
 
-    checkpoint = torch.load(conf.saved_model_path)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.eval()
+#     checkpoint = torch.load(conf.saved_model_path)
+#     model.load_state_dict(checkpoint['model_state_dict'])
+#     model.eval()
 
-    data_iterator = DataLoader(is_training=False, data=inf_features, batch_size=conf.batch_size_test)
+#     data_iterator = DataLoader(is_training=False, data=inf_features, batch_size=conf.batch_size_test)
     
-    all_logits = []
-    query_index = []
-    cand_index = []
-    cand_question = []
-    cand_program = []
+#     all_logits = []
+#     query_index = []
+#     cand_index = []
+#     cand_question = []
+#     cand_program = []
 
-    with torch.no_grad():
-        for x in tqdm(data_iterator):
-            input_ids = torch.tensor(x['input_ids']).to(conf.device)
-            input_mask = torch.tensor(x['input_mask']).to(conf.device)
-            seg_ids = torch.tensor(x['seg_ids']).to(conf.device)
-            label = torch.tensor(x['label']).to(conf.device)
+#     with torch.no_grad():
+#         for x in tqdm(data_iterator):
+#             input_ids = torch.tensor(x['input_ids']).to(conf.device)
+#             input_mask = torch.tensor(x['input_mask']).to(conf.device)
+#             seg_ids = torch.tensor(x['seg_ids']).to(conf.device)
+#             label = torch.tensor(x['label']).to(conf.device)
 
-            q_index = x['query_index']
-            c_index = x['cand_index']
-            c_question = x['cand_question']
-            c_program = x['cand_program']
+#             q_index = x['query_index']
+#             c_index = x['cand_index']
+#             c_question = x['cand_question']
+#             c_program = x['cand_program']
 
-            logits = model(input_ids, input_mask, seg_ids)
+#             logits = model(input_ids, input_mask, seg_ids)
 
-            all_logits.extend(logits.tolist())
-            query_index.extend(q_index)
-            cand_index.extend(c_index)
-            cand_question.extend(c_question)
-            cand_program.extend(c_program)
+#             all_logits.extend(logits.tolist())
+#             query_index.extend(q_index)
+#             cand_index.extend(c_index)
+#             cand_question.extend(c_question)
+#             cand_program.extend(c_program)
 
-    output_prediction_file = os.path.join(results_path, "predictions.json")
-    metrics, precision = retrieve_evaluate(all_logits, query_index, cand_index, cand_question, cand_program, output_prediction_file, conf.inference_file, topk=conf.topk)
+#     output_prediction_file = os.path.join(results_path, "predictions.json")
+#     metrics, precision = retrieve_evaluate(all_logits, query_index, cand_index, cand_question, cand_program, output_prediction_file, conf.inference_file, topk=conf.topk)
     
-    write_log(log_path, metrics)
+#     write_log(log_path, metrics)
 
 
 
@@ -999,46 +959,46 @@ if __name__ == '__main__':
             write_log(log_path, attr + " = " + str(value))
         write_log(log_path, "#######################################################")
 
-        """Import dataset and convert info features"""
-        train_data, train_examples = read_examples(conf.train_file, log_path, "train")
-        kwargs={'examples': train_examples, 'tokenizer': tokenizer}
-        write_log(log_path, "Starts converting training data to features")
-        train_features = convert_to_features(**kwargs)
+        # """Import dataset and convert info features"""
+        # train_data, train_examples = read_examples(conf.train_file, log_path, "train")
+        # kwargs={'examples': train_examples, 'tokenizer': tokenizer}
+        # write_log(log_path, "Starts converting training data to features")
+        # train_features = convert_to_features(**kwargs)
         
-        valid_data, valid_examples = read_examples(conf.valid_file, log_path, "valid")
-        kwargs['examples'] = valid_examples
-        write_log(log_path, "Starts converting validation data to features")
-        valid_features = convert_to_features(**kwargs)
+        # valid_data, valid_examples = read_examples(conf.valid_file, log_path, "valid")
+        # kwargs['examples'] = valid_examples
+        # write_log(log_path, "Starts converting validation data to features")
+        # valid_features = convert_to_features(**kwargs)
 
         if not conf.resume:
             wandb.init(project="case_retriever", notes=conf.dir_name)
         elif conf.resume:
             wandb.init(project="case_retriever", notes=conf.dir_name, resume="must", id=conf.wandb_id)
-        write_log(log_path, "Starts training...")
+        # write_log(log_path, "Starts training...")
 
         train()
 
-    else:
-        """Set path"""
-        dir_model = os.path.join(conf.output_path, conf.dir_name)
-        results_path = os.path.join(dir_model, "results")
-        log_path = os.path.join(results_path, "log.txt")
-        os.makedirs(results_path, exist_ok = True)
+    # else:
+    #     """Set path"""
+    #     dir_model = os.path.join(conf.output_path, conf.dir_name)
+    #     results_path = os.path.join(dir_model, "results")
+    #     log_path = os.path.join(results_path, "log.txt")
+    #     os.makedirs(results_path, exist_ok = True)
 
-        write_log(log_path, "####################INPUT PARAMETERS###################")   
-        for attr in conf.__dict__:
-            value = conf.__dict__[attr]
-            write_log(log_path, attr + " = " + str(value))
-        write_log(log_path, "#######################################################")
+    #     write_log(log_path, "####################INPUT PARAMETERS###################")   
+    #     for attr in conf.__dict__:
+    #         value = conf.__dict__[attr]
+    #         write_log(log_path, attr + " = " + str(value))
+    #     write_log(log_path, "#######################################################")
 
-        """Import dataset and convert info features"""
-        inf_data, inf_examples = read_examples(conf.inference_file, log_path, "test")
-        kwargs={'examples': inf_examples, 'tokenizer': tokenizer}
-        write_log(log_path, "Starts converting data to features")
-        inf_features = convert_to_features(**kwargs)
-        write_log(log_path, "Inference starts...")
+    #     """Import dataset and convert info features"""
+    #     inf_data, inf_examples = read_examples(conf.inference_file, log_path, "test")
+    #     kwargs={'examples': inf_examples, 'tokenizer': tokenizer}
+    #     write_log(log_path, "Starts converting data to features")
+    #     inf_features = convert_to_features(**kwargs)
+    #     write_log(log_path, "Inference starts...")
         
-        test()
+    #     test()
 
 
    
