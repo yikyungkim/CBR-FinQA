@@ -42,7 +42,7 @@ def load_dataset_test(finqa_train, finqa_test, constants_path, archive_path,
         train_embedding = sampling.get_embedding(train_questions)
         test_embedding = sampling.get_embedding(test_questions)
         q_scores = sampling.question_score_test(train_size, test_size, train_embedding, test_embedding)
-        sampling.save_archive(archive_path, q_scores, mode + '_scores_question')
+        # sampling.save_archive(archive_path, q_scores, mode + '_scores_question')
 
     # compute program score
     if p_score_available:
@@ -56,8 +56,8 @@ def load_dataset_test(finqa_train, finqa_test, constants_path, archive_path,
         train_programs = [data['qa']['program'] for data in train_data]
         test_programs = [data['qa']['program'] for data in test_data]
         p_scores, gold_indices = sampling.program_score_test(train_programs, test_programs, constants, ops_weight, threshold)
-        sampling.save_archive(archive_path, p_scores, mode + '_scores_program')
-        sampling.save_archive(archive_path, gold_indices, mode + '_gold_indices')
+        # sampling.save_archive(archive_path, p_scores, mode + '_scores_program')
+        # sampling.save_archive(archive_path, gold_indices, mode + '_gold_indices')
 
     print('get question similar candidates')
     if candidates_available:
@@ -68,7 +68,7 @@ def load_dataset_test(finqa_train, finqa_test, constants_path, archive_path,
             q_score = q_scores[i]
             candidates_pair = sorted(q_score, key=lambda x:x[1], reverse=True)[:num_test]            
             candidates[i]=[index for (index, score) in candidates_pair]
-        sampling.save_archive(archive_path, candidates, mode + '_' + str(num_test) + '_candidates')
+        # sampling.save_archive(archive_path, candidates, mode + '_' + str(num_test) + '_candidates')
 
     return train_data, test_data, q_scores, p_scores, gold_indices, constants, candidates
 
@@ -264,7 +264,7 @@ def test():
         inf_features, neg_features = biencoder.convert_to_features(**kwargs)
         record_time = time.time() - record_start
         biencoder.write_log(log_path, "Time for converting inference data to input features: %.3f" %record_time)
-        sampling.save_archive(conf.archive_path, inf_features, mode+'_'+str(conf.num_test)+'_features')
+        # sampling.save_archive(conf.archive_path, inf_features, mode+'_'+str(conf.num_test)+'_features')
 
     data_iterator = biencoder.myDataLoader(is_training=False, data=inf_features, batch_size=conf.batch_size_test)
     
